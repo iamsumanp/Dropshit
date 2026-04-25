@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ShelfActionMenu: View {
     @ObservedObject var manager: ShelfManager
@@ -97,6 +98,258 @@ private final class ShelfActionTargets: NSObject {
     @objc func clear() {
         manager.clear(shelfID: shelfID)
     }
+
+    // MARK: - Global actions
+
+    @objc func getInfo() {
+        let urls = self.urls
+        guard !urls.isEmpty else { return }
+        // Cap to avoid spamming windows for huge shelves.
+        for url in urls.prefix(8) {
+            let escaped = url.path.replacingOccurrences(of: "\"", with: "\\\"")
+            let source = """
+            tell application "Finder"
+                activate
+                open information window of (POSIX file "\(escaped)" as alias)
+            end tell
+            """
+            var error: NSDictionary?
+            NSAppleScript(source: source)?.executeAndReturnError(&error)
+        }
+    }
+
+    @objc func batchRename() {
+        let items = manager.items(of: shelfID)
+        let renamable = items.compactMap { item -> (UUID, URL)? in
+            guard let url = item.fileURL,
+                  FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return (item.id, url)
+        }
+        guard !renamable.isEmpty else { return }
+        guard let pattern = Self.promptBatchRename() else { return }
+
+        var failures: [(name: String, reason: String)] = []
+        var renamedCount = 0
+
+        // Files we're about to rename away — don't treat them as collisions.
+        let sourcePaths = Set(renamable.map { $0.1.standardizedFileURL.path })
+        var plannedPaths: Set<String> = []
+
+        for (i, pair) in renamable.enumerated() {
+            let number = i + 1
+            let url = pair.1
+            let ext = url.pathExtension
+            let dir = url.deletingLastPathComponent()
+
+            // Only insert a number when the pattern asks for it.
+            let baseName = pattern.contains("#")
+                ? pattern.replacingOccurrences(of: "#", with: "\(number)")
+                : pattern
+
+            var target = dir.appendingPathComponent(baseName)
+            if !ext.isEmpty { target.appendPathExtension(ext) }
+
+            // Disambiguate only when the intended name really collides.
+            var n = 2
+            while target.standardizedFileURL.path != url.standardizedFileURL.path {
+                let key = target.standardizedFileURL.path
+                let existsOnDisk = FileManager.default.fileExists(atPath: target.path)
+                    && !sourcePaths.contains(key)
+                if !plannedPaths.contains(key) && !existsOnDisk { break }
+                var cand = dir.appendingPathComponent("\(baseName) \(n)")
+                if !ext.isEmpty { cand.appendPathExtension(ext) }
+                target = cand
+                n += 1
+            }
+
+            plannedPaths.insert(target.standardizedFileURL.path)
+            guard target.standardizedFileURL.path != url.standardizedFileURL.path else {
+                continue
+            }
+
+            do {
+                try manager.renameItem(id: pair.0, to: target, in: shelfID)
+                renamedCount += 1
+            } catch {
+                failures.append((
+                    name: url.lastPathComponent,
+                    reason: (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                ))
+            }
+        }
+
+        if !failures.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = renamedCount > 0
+                ? "Renamed \(renamedCount), \(failures.count) failed"
+                : "Batch Rename Failed"
+            alert.informativeText = failures
+                .map { "• \($0.name) — \($0.reason)" }
+                .joined(separator: "\n")
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
+    @objc func createZipArchive() {
+        let urls = self.urls
+        guard !urls.isEmpty else { return }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Archive.zip"
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+
+        try? FileManager.default.removeItem(at: dest)
+
+        // Stage the sources by hard-link (falls back to copy) into a temp dir,
+        // then run `zip -r` from that dir using basenames. This sidesteps
+        // `zip -j` path-junk warnings and avoids any TCC surprises from
+        // spawning zip with absolute paths into protected folders.
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Shelf-zip-\(UUID().uuidString)")
+
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        } catch {
+            Self.showZipError("Could not create a staging directory: \(error.localizedDescription)")
+            return
+        }
+
+        var basenames: [String] = []
+        var seen: Set<String> = []
+        for src in urls {
+            let name = Self.uniqueName(for: src.lastPathComponent, in: &seen)
+            let link = staging.appendingPathComponent(name)
+            do {
+                try FileManager.default.linkItem(at: src, to: link)
+            } catch {
+                // Fall back to copy for cross-volume or permission cases.
+                do {
+                    try FileManager.default.copyItem(at: src, to: link)
+                } catch {
+                    Self.showZipError("Could not stage \(src.lastPathComponent): \(error.localizedDescription)")
+                    try? FileManager.default.removeItem(at: staging)
+                    return
+                }
+            }
+            basenames.append(name)
+        }
+
+        Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.currentDirectoryURL = staging
+            process.arguments = ["-r", dest.path] + basenames
+
+            let errPipe = Pipe()
+            process.standardError = errPipe
+            process.standardOutput = Pipe()
+
+            do {
+                try process.run()
+            } catch {
+                try? FileManager.default.removeItem(at: staging)
+                await Self.showZipError("Failed to launch zip: \(error.localizedDescription)")
+                return
+            }
+            process.waitUntilExit()
+
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errText = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let status = process.terminationStatus
+            try? FileManager.default.removeItem(at: staging)
+
+            if status != 0 {
+                let detail = errText.isEmpty
+                    ? "zip exited with status \(status)."
+                    : errText
+                await Self.showZipError(detail)
+            }
+        }
+    }
+
+    @MainActor
+    private static func showZipError(_ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = "Archive Failed"
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    private static func uniqueName(for name: String, in seen: inout Set<String>) -> String {
+        var candidate = name
+        if !seen.contains(candidate) {
+            seen.insert(candidate)
+            return candidate
+        }
+        let url = URL(fileURLWithPath: name)
+        let stem = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+        var i = 2
+        while true {
+            candidate = ext.isEmpty ? "\(stem) \(i)" : "\(stem) \(i).\(ext)"
+            if !seen.contains(candidate) {
+                seen.insert(candidate)
+                return candidate
+            }
+            i += 1
+        }
+    }
+
+    @objc func copyPath() {
+        let urls = self.urls
+        guard !urls.isEmpty else { return }
+        let joined = urls.map { $0.path }.joined(separator: "\n")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects([joined as NSString])
+    }
+
+    @objc func moveAllToTrash() {
+        let items = manager.items(of: shelfID)
+        var urlToID: [String: UUID] = [:]
+        var urls: [URL] = []
+        for item in items {
+            guard let url = item.fileURL,
+                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            urlToID[url.standardizedFileURL.path] = item.id
+            urls.append(url)
+        }
+        guard !urls.isEmpty else { return }
+
+        let mgr = manager
+        let shelfRef = shelfID
+        NSWorkspace.shared.recycle(urls) { trashed, _ in
+            let trashedKeys = trashed.keys.map { $0.standardizedFileURL.path }
+            Task { @MainActor in
+                for path in trashedKeys {
+                    if let id = urlToID[path] {
+                        mgr.removeItem(id: id, from: shelfRef)
+                    }
+                }
+            }
+        }
+    }
+
+    static func promptBatchRename(defaultPattern: String = "File #") -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Batch Rename"
+        alert.informativeText = "Use # as a placeholder for the sequence number."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = defaultPattern
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 private final class ShelfActionNSMenu: NSMenu {
@@ -189,12 +442,68 @@ enum ShelfActionMenuBuilder {
 
         menu.addItem(.separator())
 
+        let allActions = NSMenuItem(title: "All Actions", action: nil, keyEquivalent: "")
+        allActions.image = symbol("ellipsis.circle")
+        allActions.submenu = makeAllActionsMenu(targets: targets, hasFiles: hasFiles)
+        menu.addItem(allActions)
+
         menu.addItem(makeItem(
             title: "Clear Shelf",
             symbol: "xmark.bin",
             action: #selector(ShelfActionTargets.clear),
             target: targets,
             enabled: !items.isEmpty
+        ))
+
+        return menu
+    }
+
+    private static func makeAllActionsMenu(
+        targets: ShelfActionTargets,
+        hasFiles: Bool
+    ) -> NSMenu {
+        let menu = NSMenu()
+
+        menu.addItem(makeItem(
+            title: "Get Info",
+            symbol: "info.circle",
+            action: #selector(ShelfActionTargets.getInfo),
+            target: targets,
+            enabled: hasFiles
+        ))
+
+        menu.addItem(makeItem(
+            title: "Batch Rename…",
+            symbol: "character.cursor.ibeam",
+            action: #selector(ShelfActionTargets.batchRename),
+            target: targets,
+            enabled: hasFiles
+        ))
+
+        menu.addItem(makeItem(
+            title: "Create ZIP Archive…",
+            symbol: "doc.zipper",
+            action: #selector(ShelfActionTargets.createZipArchive),
+            target: targets,
+            enabled: hasFiles
+        ))
+
+        menu.addItem(makeItem(
+            title: "Copy Path",
+            symbol: "doc.on.doc",
+            action: #selector(ShelfActionTargets.copyPath),
+            target: targets,
+            enabled: hasFiles
+        ))
+
+        menu.addItem(.separator())
+
+        menu.addItem(makeItem(
+            title: "Move to Trash",
+            symbol: "trash",
+            action: #selector(ShelfActionTargets.moveAllToTrash),
+            target: targets,
+            enabled: hasFiles
         ))
 
         return menu

@@ -8,6 +8,7 @@ struct CollapsedShelfView: View {
     var isDragging: Bool = false
     var onClose: () -> Void = {}
     var onOpenDocuments: () -> Void = {}
+    var onDock: () -> Void = {}
     var onDragStart: () -> Void = {}
     var onDragEnd: () -> Void = {}
 
@@ -43,7 +44,7 @@ struct CollapsedShelfView: View {
                 .animation(.easeOut(duration: 0.2), value: isDragging)
 
                 VStack(spacing: 0) {
-                    HStack {
+                    HStack(spacing: 6) {
                         CircularIconButton(systemName: "xmark", action: onClose)
                         Spacer()
                         ShelfActionMenu(manager: manager, shelfID: shelfID)
@@ -53,6 +54,10 @@ struct CollapsedShelfView: View {
 
                     DocumentsPill(title: pillTitle, action: onOpenDocuments)
                 }
+
+                GrabHandle(onTap: onDock)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .offset(y: -12)
             }
         }
     }
@@ -240,18 +245,17 @@ private struct DocumentsPill: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text("›")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .offset(y: -1)
             }
             .foregroundStyle(Color.white.opacity(0.95))
-            .frame(maxWidth: .infinity)
-            .frame(height: 36)
+            .frame(height: 26)
             .padding(.horizontal, 10)
             .background(
                 Capsule(style: .continuous)
@@ -266,6 +270,26 @@ private struct DocumentsPill: View {
         .buttonStyle(.plain)
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: hovering)
         .onHover { hovering = $0 }
+    }
+}
+
+struct GrabHandle: View {
+    var onTap: (() -> Void)? = nil
+
+    @State private var hovering = false
+
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(Color.white.opacity(hovering ? 0.75 : 0.28))
+            .frame(width: 40, height: 4)
+            .shadow(color: Color.white.opacity(hovering ? 0.55 : 0),
+                    radius: hovering ? 6 : 0)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .onTapGesture { onTap?() }
+            .animation(.easeOut(duration: 0.15), value: hovering)
     }
 }
 

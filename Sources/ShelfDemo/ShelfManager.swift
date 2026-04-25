@@ -8,6 +8,12 @@ final class ShelfManager: ObservableObject {
     @Published private(set) var shelves: [Shelf]
     @Published var isDragging: Bool = false
 
+    // Emits the shelfID that rejected a duplicate file/folder.
+    let duplicateRejected = PassthroughSubject<UUID, Never>()
+    // Emits the shelfID when a docked panel was dragged away from the edge
+    // and should revert to collapsed state in-place.
+    let undockRequested = PassthroughSubject<UUID, Never>()
+
     private final class CachedThumbnail: NSObject {
         let image: NSImage
         let isIcon: Bool
@@ -57,6 +63,14 @@ final class ShelfManager: ObservableObject {
         shelf(id: shelfID)?.items ?? []
     }
 
+    func containsFile(url: URL, in shelfID: UUID) -> Bool {
+        let key = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return items(of: shelfID).contains { item in
+            guard let existing = item.fileURL else { return false }
+            return existing.resolvingSymlinksInPath().standardizedFileURL.path == key
+        }
+    }
+
     func totalBytes(of shelfID: UUID) -> Int64 {
         items(of: shelfID).reduce(0) { $0 + ($1.byteSize ?? 0) }
     }
@@ -80,6 +94,39 @@ final class ShelfManager: ObservableObject {
         shelves.removeAll { $0.id == id }
     }
 
+    /// Removes shelves whose last activity (most recent item add, falling back
+    /// to shelf createdAt) is older than `days`. For each removed shelf, files
+    /// that the shelf owns (i.e. live under our temporary directory) are also
+    /// deleted from disk; files originally from Finder or anywhere else are
+    /// left untouched.
+    /// Returns the IDs of the shelves that were pruned so callers can close
+    /// any associated UI.
+    @discardableResult
+    func pruneShelves(olderThanDays days: Int) -> [UUID] {
+        guard days > 0 else { return [] }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        let tempPath = FileManager.default.temporaryDirectory
+            .standardizedFileURL.path
+
+        let expired = shelves.filter { shelf in
+            let last = shelf.items.map(\.createdAt).max() ?? shelf.createdAt
+            return last < cutoff
+        }
+        guard !expired.isEmpty else { return [] }
+
+        for shelf in expired {
+            for item in shelf.items {
+                guard let url = item.fileURL else { continue }
+                let path = url.standardizedFileURL.path
+                guard path.hasPrefix(tempPath) else { continue }
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        let ids = expired.map(\.id)
+        shelves.removeAll { ids.contains($0.id) }
+        return ids
+    }
+
     private func index(of shelfID: UUID) -> Int? {
         shelves.firstIndex { $0.id == shelfID }
     }
@@ -101,9 +148,74 @@ final class ShelfManager: ObservableObject {
         shelves[idx].items.removeAll()
     }
 
+    enum RenameError: LocalizedError {
+        case itemNotFound
+        case missingURL
+        case sourceMissing(URL)
+        case destinationExists(URL)
+        case moveFailed(URL, URL, Error)
+        case moveDidNotTakeEffect(URL, URL)
+
+        var errorDescription: String? {
+            switch self {
+            case .itemNotFound: return "Item not found."
+            case .missingURL: return "Item has no file URL."
+            case .sourceMissing(let url):
+                return "Source no longer exists: \(url.path)"
+            case .destinationExists(let url):
+                return "A file already exists at \(url.lastPathComponent)."
+            case .moveFailed(_, _, let err):
+                return err.localizedDescription
+            case .moveDidNotTakeEffect:
+                return "Rename reported success but the file did not move."
+            }
+        }
+    }
+
+    func renameItem(id itemID: UUID, to newURL: URL, in shelfID: UUID) throws {
+        guard let sIdx = index(of: shelfID),
+              let iIdx = shelves[sIdx].items.firstIndex(where: { $0.id == itemID })
+        else { throw RenameError.itemNotFound }
+        guard let oldURL = shelves[sIdx].items[iIdx].fileURL
+        else { throw RenameError.missingURL }
+        guard FileManager.default.fileExists(atPath: oldURL.path)
+        else { throw RenameError.sourceMissing(oldURL) }
+
+        if oldURL.standardizedFileURL.path != newURL.standardizedFileURL.path {
+            guard !FileManager.default.fileExists(atPath: newURL.path)
+            else { throw RenameError.destinationExists(newURL) }
+        }
+
+        do {
+            try FileManager.default.moveItem(at: oldURL, to: newURL)
+        } catch {
+            throw RenameError.moveFailed(oldURL, newURL, error)
+        }
+
+        // Verify the rename actually took effect — covers weird cases
+        // (aliases, sync engines, case-insensitive filesystems).
+        guard FileManager.default.fileExists(atPath: newURL.path)
+        else { throw RenameError.moveDidNotTakeEffect(oldURL, newURL) }
+
+        let old = shelves[sIdx].items[iIdx]
+        shelves[sIdx].items[iIdx] = ShelfItem(
+            id: old.id,
+            type: old.type,
+            fileURL: newURL,
+            textContent: old.textContent,
+            thumbnail: old.thumbnail,
+            thumbnailIsIcon: old.thumbnailIsIcon,
+            createdAt: old.createdAt
+        )
+    }
+
     @discardableResult
     func addFile(url: URL, to shelfID: UUID) -> ShelfItem? {
         guard index(of: shelfID) != nil else { return nil }
+        if containsFile(url: url, in: shelfID) {
+            duplicateRejected.send(shelfID)
+            return nil
+        }
         let ext = url.pathExtension.lowercased()
         let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "tiff", "bmp", "webp"]
         let type: ShelfItem.ItemType = imageExts.contains(ext) ? .image : .file

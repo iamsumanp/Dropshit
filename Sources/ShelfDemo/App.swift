@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @main
@@ -29,8 +30,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingShelfID: UUID?
     private var itemCountOnShakeOpen: Int = 0
 
-    private let collapsedSize = NSSize(width: 178, height: 234)
+    // Shelves created via shake auto-close when emptied; menu-created shelves don't.
+    private var ephemeralShelfIDs: Set<UUID> = []
+    private var emptyCloseTimers: [UUID: Timer] = [:]
+    private var shelvesCancellable: AnyCancellable?
+    private let emptyCloseGrace: TimeInterval = 1.2
+
+    // Duplicate-drop toast.
+    private var duplicateToastCancellable: AnyCancellable?
+    private var toastPanel: NSPanel?
+    private var toastHideTimer: Timer?
+    private let toastVisibleDuration: TimeInterval = 2.5
+
+    // Settings window (accessory app — created lazily, reused).
+    private var settingsWindow: NSWindow?
+
+    // Hourly check that prunes shelves whose last activity is older than the
+    // user's configured retention duration (in @AppStorage as `shelf.expiryDays`).
+    private var expiryTimer: Timer?
+
+    private let collapsedSize = NSSize(width: 210, height: 210)
     private let expandedSize = NSSize(width: 520, height: 560)
+    private let dockedSize = NSSize(width: 44, height: 150)
+    private let dockedOffscreen: CGFloat = 18  // hides the right-side curve past the screen edge
+
+    // Docked-to-edge state.
+    private var dockedShelfIDs: Set<UUID> = []
+    private var preDockFrames: [UUID: NSRect] = [:]
+    private var dockedFrames: [UUID: NSRect] = [:]
+    private var windowMoveObserver: NSObjectProtocol?
+    private var suppressMoveCheck = false
 
     // MARK: - Lifecycle
 
@@ -55,6 +84,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         installPasteShortcut()
+
+        shelvesCancellable = manager.$shelves
+            .sink { [weak self] shelves in
+                self?.reconcileEmptyEphemeralShelves(shelves)
+            }
+
+        duplicateToastCancellable = manager.duplicateRejected
+            .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main, latest: true)
+            .sink { [weak self] shelfID in
+                self?.showDuplicateToast(for: shelfID)
+            }
+
+        runShelfExpiryPrune()
+        expiryTimer = Timer.scheduledTimer(
+            withTimeInterval: 3600, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in self?.runShelfExpiryPrune() }
+        }
+    }
+
+    private func runShelfExpiryPrune() {
+        let days = UserDefaults.standard.integer(forKey: "shelf.expiryDays")
+        guard days > 0 else { return }
+        let removed = manager.pruneShelves(olderThanDays: days)
+        for shelfID in removed {
+            panels[shelfID]?.orderOut(nil)
+            panels.removeValue(forKey: shelfID)
+            ephemeralShelfIDs.remove(shelfID)
+            emptyCloseTimers.removeValue(forKey: shelfID)?.invalidate()
+        }
+        if manager.shelves.isEmpty {
+            _ = manager.createShelf()
+        }
     }
 
     private func urlsForKeyPanel() -> [URL] {
@@ -99,12 +161,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let settings = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettingsAction),
+            keyEquivalent: ","
+        )
+        settings.target = self
+        menu.addItem(settings)
+
         let quit = NSMenuItem(
             title: "Quit",
             action: #selector(NSApp.terminate(_:)),
             keyEquivalent: "q"
         )
         menu.addItem(quit)
+    }
+
+    @objc private func openSettingsAction() {
+        if settingsWindow == nil {
+            let hosting = NSHostingController(rootView: SettingsView())
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "Shelf Settings"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        // Accessory app: temporarily bring to front so the window receives focus.
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func buildRecentShelvesMenu() -> NSMenu {
@@ -191,6 +276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             panels[shelf.id]?.orderOut(nil)
             panels.removeValue(forKey: shelf.id)
             manager.removeShelf(id: shelf.id)
+            ephemeralShelfIDs.remove(shelf.id)
+            emptyCloseTimers.removeValue(forKey: shelf.id)?.invalidate()
         }
         if manager.shelves.isEmpty {
             _ = manager.createShelf()
@@ -202,6 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func handleShake() {
         // Every shake creates its own empty shelf + panel near the cursor.
         let shelfID = manager.createShelf()
+        ephemeralShelfIDs.insert(shelfID)
         pendingShelfID = shelfID
         itemCountOnShakeOpen = 0
         openPanel(for: shelfID, nearCursor: true)
@@ -223,6 +311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     panel.orderOut(nil)
                     self.manager.removeShelf(id: shelfID)
                     self.panels.removeValue(forKey: shelfID)
+                    self.ephemeralShelfIDs.remove(shelfID)
+                    self.emptyCloseTimers.removeValue(forKey: shelfID)?.invalidate()
                 }
                 self.pendingShelfID = nil
             }
@@ -239,6 +329,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             handle(event)
             return event
         }
+    }
+
+    // MARK: - Auto-close on empty
+
+    private func reconcileEmptyEphemeralShelves(_ shelves: [Shelf]) {
+        let existingIDs = Set(shelves.map { $0.id })
+
+        // Drop tracking for shelves that no longer exist.
+        ephemeralShelfIDs.formIntersection(existingIDs)
+        dockedShelfIDs.formIntersection(existingIDs)
+        preDockFrames = preDockFrames.filter { existingIDs.contains($0.key) }
+        for (id, timer) in emptyCloseTimers where !existingIDs.contains(id) {
+            timer.invalidate()
+            emptyCloseTimers.removeValue(forKey: id)
+        }
+
+        for shelf in shelves {
+            guard ephemeralShelfIDs.contains(shelf.id) else { continue }
+            // Don't fight the shake-release watcher for the just-opened shelf.
+            if shelf.id == pendingShelfID { continue }
+
+            if shelf.items.isEmpty {
+                scheduleEmptyClose(for: shelf.id)
+            } else if let timer = emptyCloseTimers.removeValue(forKey: shelf.id) {
+                timer.invalidate()
+            }
+        }
+    }
+
+    private func scheduleEmptyClose(for shelfID: UUID) {
+        guard emptyCloseTimers[shelfID] == nil else { return }
+        guard let panel = panels[shelfID], panel.isVisible else { return }
+
+        let timer = Timer.scheduledTimer(withTimeInterval: emptyCloseGrace, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.fireEmptyClose(for: shelfID)
+            }
+        }
+        emptyCloseTimers[shelfID] = timer
+    }
+
+    private func fireEmptyClose(for shelfID: UUID) {
+        emptyCloseTimers.removeValue(forKey: shelfID)?.invalidate()
+        guard ephemeralShelfIDs.contains(shelfID) else { return }
+        guard manager.items(of: shelfID).isEmpty else { return }
+        panels[shelfID]?.orderOut(nil)
+        panels.removeValue(forKey: shelfID)
+        ephemeralShelfIDs.remove(shelfID)
+        manager.removeShelf(id: shelfID)
     }
 
     private func disarmShakeReleaseWatcher() {
@@ -284,7 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 shelfID: shelfID,
                 onClose: { self?.hidePanel(for: shelfID) },
                 onResize: { expanded in self?.setPanelExpanded(shelfID, expanded: expanded) },
-                onOpenShelf: { id in self?.openPanel(for: id, nearCursor: false) }
+                onDockChanged: { docked in self?.setPanelDocked(shelfID, docked: docked) }
             )
         }
     }
@@ -311,12 +450,120 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let newFrame = NSRect(x: originX, y: originY,
                               width: newSize.width, height: newSize.height)
 
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.5
+        animate(panel: panel, to: newFrame)
+    }
+
+    private func setPanelDocked(_ shelfID: UUID, docked: Bool) {
+        guard let panel = panels[shelfID] else { return }
+
+        if docked {
+            preDockFrames[shelfID] = panel.frame
+            dockedShelfIDs.insert(shelfID)
+            installWindowMoveObserverIfNeeded()
+
+            let currentFrame = panel.frame
+            let screenFrame = panel.screen?.visibleFrame
+                ?? NSScreen.main?.visibleFrame
+                ?? currentFrame
+            // Position so the right-side curve sits past the screen edge,
+            // giving a flat flush-to-edge look on the visible side.
+            let originX = screenFrame.maxX - dockedSize.width + dockedOffscreen
+            var originY = currentFrame.midY - dockedSize.height / 2
+            originY = max(screenFrame.minY + 4,
+                          min(originY, screenFrame.maxY - dockedSize.height - 4))
+            let newFrame = NSRect(
+                x: originX, y: originY,
+                width: dockedSize.width, height: dockedSize.height
+            )
+            dockedFrames[shelfID] = newFrame
+            animate(panel: panel, to: newFrame)
+        } else {
+            dockedShelfIDs.remove(shelfID)
+            dockedFrames.removeValue(forKey: shelfID)
+            if dockedShelfIDs.isEmpty { removeWindowMoveObserver() }
+            let restore: NSRect
+            if let saved = preDockFrames.removeValue(forKey: shelfID) {
+                restore = saved
+            } else {
+                let size = expandedShelfIDs.contains(shelfID) ? expandedSize : collapsedSize
+                let currentFrame = panel.frame
+                let screenFrame = panel.screen?.visibleFrame
+                    ?? NSScreen.main?.visibleFrame
+                    ?? currentFrame
+                let originX = max(screenFrame.minX + 8,
+                                  screenFrame.maxX - size.width - 8)
+                let originY = max(screenFrame.minY + 8,
+                                  currentFrame.midY - size.height / 2)
+                restore = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+            }
+            animate(panel: panel, to: restore)
+        }
+    }
+
+    private func animate(panel: NSPanel, to frame: NSRect) {
+        suppressMoveCheck = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.45
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.9, 0.3, 1.0)
             ctx.allowsImplicitAnimation = true
-            panel.animator().setFrame(newFrame, display: true)
+            panel.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            self?.suppressMoveCheck = false
+        })
+    }
+
+    // MARK: - Docked drag-off detection
+
+    private func installWindowMoveObserverIfNeeded() {
+        guard windowMoveObserver == nil else { return }
+        windowMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self, let window = note.object as? NSPanel else { return }
+            Task { @MainActor in self.handleDockedPanelMoved(window) }
         }
+    }
+
+    private func removeWindowMoveObserver() {
+        if let obs = windowMoveObserver {
+            NotificationCenter.default.removeObserver(obs)
+            windowMoveObserver = nil
+        }
+    }
+
+    private func handleDockedPanelMoved(_ window: NSPanel) {
+        if suppressMoveCheck { return }
+        guard let (shelfID, _) = panels.first(where: { $0.value === window }) else { return }
+        guard dockedShelfIDs.contains(shelfID) else { return }
+        guard let anchored = dockedFrames[shelfID] else { return }
+
+        let dx = abs(window.frame.minX - anchored.minX)
+        let dy = abs(window.frame.minY - anchored.minY)
+        guard dx > 4 || dy > 4 else { return }
+
+        undockInPlace(shelfID: shelfID, fromFrame: window.frame)
+    }
+
+    private func undockInPlace(shelfID: UUID, fromFrame: NSRect) {
+        guard let panel = panels[shelfID] else { return }
+        dockedShelfIDs.remove(shelfID)
+        dockedFrames.removeValue(forKey: shelfID)
+        preDockFrames.removeValue(forKey: shelfID)
+        if dockedShelfIDs.isEmpty { removeWindowMoveObserver() }
+
+        let size = expandedShelfIDs.contains(shelfID) ? expandedSize : collapsedSize
+        // Keep the current top-left roughly where the user let go.
+        let topY = fromFrame.maxY
+        let newFrame = NSRect(
+            x: fromFrame.minX,
+            y: topY - size.height,
+            width: size.width,
+            height: size.height
+        )
+        animate(panel: panel, to: newFrame)
+        manager.undockRequested.send(shelfID)
     }
 
     // MARK: - Positioning
@@ -391,6 +638,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                        display: true)
     }
 
+    // MARK: - Duplicate toast
+
+    private func showDuplicateToast(for shelfID: UUID) {
+        guard let shelfPanel = panels[shelfID], shelfPanel.isVisible else { return }
+
+        let panel = toastPanel ?? makeToastPanel()
+        toastPanel = panel
+
+        let shelfFrame = shelfPanel.frame
+        let size = NSSize(width: shelfFrame.width, height: 56)
+        let gap: CGFloat = 10
+        var originX = shelfFrame.midX - size.width / 2
+        var originY = shelfFrame.minY - size.height - gap
+
+        if let screenFrame = shelfPanel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            originX = max(screenFrame.minX + 8,
+                          min(originX, screenFrame.maxX - size.width - 8))
+            if originY < screenFrame.minY + 8 {
+                // Not enough room below; show above the shelf instead.
+                originY = shelfFrame.maxY + gap
+            }
+        }
+
+        panel.setFrame(
+            NSRect(origin: NSPoint(x: originX, y: originY), size: size),
+            display: true
+        )
+        panel.orderFront(nil)
+
+        toastHideTimer?.invalidate()
+        toastHideTimer = Timer.scheduledTimer(
+            withTimeInterval: toastVisibleDuration,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.toastPanel?.orderOut(nil)
+            }
+        }
+    }
+
+    private func makeToastPanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 56),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.animationBehavior = .utilityWindow
+
+        let hosting = NSHostingView(rootView: DuplicateToastView())
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView(frame: panel.contentView?.bounds ?? .zero)
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        panel.contentView = container
+        return panel
+    }
+
     // MARK: - Paste shortcut
 
     private func installPasteShortcut() {
@@ -407,5 +724,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let added = self.manager.addFromClipboard(to: shelfID)
             return added > 0 ? nil : event
         }
+    }
+}
+
+private struct DuplicateToastView: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.85))
+            Text("One or more items is\nalready present in the shelf")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.92))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(white: 0.16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+                )
+        )
     }
 }

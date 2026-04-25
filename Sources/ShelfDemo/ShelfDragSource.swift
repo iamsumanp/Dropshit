@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A transparent NSView overlay that starts a real NSDraggingSession with one
 /// or more file URLs. Works inside a non-activating NSPanel where SwiftUI's
@@ -34,7 +35,7 @@ struct ShelfDragOverlay: NSViewRepresentable {
     }
 }
 
-final class DragInitiatorView: NSView, NSDraggingSource {
+final class DragInitiatorView: NSView, NSDraggingSource, NSFilePromiseProviderDelegate {
     var provider: (() -> [URL])?
     var onStart: (() -> Void)?
     var onEnd: (() -> Void)?
@@ -45,6 +46,12 @@ final class DragInitiatorView: NSView, NSDraggingSource {
     private var mouseDownPoint: NSPoint?
     private var sessionActive = false
     private let dragThreshold: CGFloat = 4
+
+    private static let promiseQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.qualityOfService = .userInitiated
+        return q
+    }()
 
     override func menu(for event: NSEvent) -> NSMenu? {
         menuBuilder?()
@@ -103,7 +110,16 @@ final class DragInitiatorView: NSView, NSDraggingSource {
 
         var draggingItems: [NSDraggingItem] = []
         for (index, url) in urls.enumerated() {
-            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+            // File promise lets the destination construct the destination URL
+            // (with collision handling) and ask us to write the file there.
+            // Critically, destinations honor pathExtension correctly even for
+            // unregistered UTIs (e.g. .cube), so collisions become "name 2.cube"
+            // rather than "name.cube 2".
+            let typeID = (try? url.resourceValues(forKeys: [.contentTypeKey])
+                .contentType?.identifier) ?? UTType.data.identifier
+            let promise = NSFilePromiseProvider(fileType: typeID, delegate: self)
+            promise.userInfo = url
+            let item = NSDraggingItem(pasteboardWriter: promise)
             let icon = NSWorkspace.shared.icon(forFile: url.path)
             icon.size = NSSize(width: iconSize, height: iconSize)
             let off = CGFloat(index) * 1.5
@@ -140,5 +156,42 @@ final class DragInitiatorView: NSView, NSDraggingSource {
     ) {
         sessionActive = false
         onEnd?()
+    }
+
+    // MARK: - NSFilePromiseProviderDelegate
+
+    func filePromiseProvider(
+        _ filePromiseProvider: NSFilePromiseProvider,
+        fileNameForType fileType: String
+    ) -> String {
+        guard let url = filePromiseProvider.userInfo as? URL else { return "Untitled" }
+        return url.lastPathComponent
+    }
+
+    func filePromiseProvider(
+        _ filePromiseProvider: NSFilePromiseProvider,
+        writePromiseTo url: URL,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        guard let sourceURL = filePromiseProvider.userInfo as? URL else {
+            completionHandler(NSError(
+                domain: "ShelfDragSource", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Promise has no source URL"]
+            ))
+            return
+        }
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            try FileManager.default.copyItem(at: sourceURL, to: url)
+            completionHandler(nil)
+        } catch {
+            completionHandler(error)
+        }
+    }
+
+    func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue {
+        Self.promiseQueue
     }
 }

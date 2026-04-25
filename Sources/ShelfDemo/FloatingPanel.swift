@@ -31,15 +31,20 @@ final class FloatingPanel<Content: View>: NSPanel {
         root.layer?.cornerCurve = .continuous
         root.layer?.masksToBounds = true
 
+        // Liquid-glass approximation: HUD-style vibrant blur behind a
+        // specular highlight gradient and a subtle inner stroke. When the
+        // project moves to the macOS 26 SDK, swap `FloatingPanelContent`
+        // for a `.glassEffect(in: RoundedRectangle(...))` wrapper and
+        // drop the blur view.
         let blur = NSVisualEffectView()
-        blur.material = .popover
+        blur.material = .sidebar
         blur.blendingMode = .behindWindow
         blur.state = .active
         blur.isEmphasized = false
         blur.appearance = NSAppearance(named: .vibrantDark)
         blur.translatesAutoresizingMaskIntoConstraints = false
 
-        let hosting = NSHostingView(
+        let hosting = FirstMouseHostingView(
             rootView: FloatingPanelContent(content: content)
         )
         hosting.translatesAutoresizingMaskIntoConstraints = false
@@ -66,6 +71,13 @@ final class FloatingPanel<Content: View>: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Hosting view that delivers the first click even when the panel isn't key.
+/// Without this, clicks on a non-key `.nonactivatingPanel` only bring the panel
+/// to key state and the underlying SwiftUI view never sees the event.
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// Injects `QuickLookController.shared` into the shelf panel's responder chain
 /// so QLPreviewPanel can discover a controller and the space key is routed to it.
 private final class FloatingPanelRootView: NSView {
@@ -89,33 +101,17 @@ private struct FloatingPanelContent<Content: View>: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(0.10),
-                    Color.white.opacity(0.02),
-                    Color.black.opacity(0.18),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
+            // Flat darkening wash — uniform top to bottom.
+            Color.black.opacity(0.20)
+                .allowsHitTesting(false)
 
+            // Subtle even stroke — no top-weighted gradient.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.22),
-                            Color.white.opacity(0.05),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.5
-                )
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
                 .allowsHitTesting(false)
 
             content
-                .padding(16)
+                .padding(10)
         }
         .ignoresSafeArea()
     }

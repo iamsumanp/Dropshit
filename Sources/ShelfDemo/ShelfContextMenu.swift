@@ -89,6 +89,61 @@ final class ShelfItemActions: NSObject {
     @objc func removeFromShelf() {
         manager?.removeItem(id: item.id, from: shelfID)
     }
+
+    // MARK: - Image actions
+
+    @objc func resizeImage() {
+        guard let url = item.fileURL else { return }
+        guard let max = ImageActionPrompts.resizeMaxDimension() else { return }
+        runImageAction { ImageActions.resize(url: url, maxDimension: max) }
+    }
+
+    @objc func convertFormat() {
+        guard let url = item.fileURL else { return }
+        guard let format = ImageActionPrompts.format() else { return }
+        runImageAction { ImageActions.convert(url: url, to: format) }
+    }
+
+    @objc func compressImage() {
+        guard let url = item.fileURL else { return }
+        guard let quality = ImageActionPrompts.compressionQuality() else { return }
+        runImageAction { ImageActions.compress(url: url, quality: quality) }
+    }
+
+    @objc func removeMetadata() {
+        guard let url = item.fileURL else { return }
+        runImageAction { ImageActions.removeMetadata(url: url) }
+    }
+
+    @objc func createPDF() {
+        guard let url = item.fileURL else { return }
+        runImageAction { ImageActions.createPDF(from: [url]) }
+    }
+
+    private func runImageAction(_ work: @escaping () -> URL?) {
+        let shelfRef = shelfID
+        let managerRef = manager
+        Task.detached {
+            let result = work()
+            await MainActor.run {
+                if let result {
+                    managerRef?.addFile(url: result, to: shelfRef)
+                } else {
+                    Self.showFailureAlert()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private static func showFailureAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Action Failed"
+        alert.informativeText = "The image could not be processed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
 }
 
 final class ShelfMenu: NSMenu {
@@ -163,7 +218,11 @@ enum ShelfContextMenu {
 
         // All Actions submenu
         let allActions = NSMenuItem(title: "All Actions", action: nil, keyEquivalent: "")
-        allActions.submenu = makeAllActionsMenu(actions: actions, hasFile: hasFile)
+        allActions.submenu = makeAllActionsMenu(
+            actions: actions,
+            hasFile: hasFile,
+            isImage: item.type == .image
+        )
         menu.addItem(allActions)
 
         return menu
@@ -221,8 +280,40 @@ enum ShelfContextMenu {
     }
 
     @MainActor
-    private static func makeAllActionsMenu(actions: ShelfItemActions, hasFile: Bool) -> NSMenu {
+    private static func makeAllActionsMenu(
+        actions: ShelfItemActions,
+        hasFile: Bool,
+        isImage: Bool
+    ) -> NSMenu {
         let menu = NSMenu()
+
+        if isImage {
+            menu.addItem(sectionHeader("Image Actions"))
+
+            addItem(to: menu, title: "Resize…",
+                    selector: #selector(ShelfItemActions.resizeImage),
+                    symbol: "arrow.down.right.and.arrow.up.left",
+                    target: actions)
+            addItem(to: menu, title: "Convert Format…",
+                    selector: #selector(ShelfItemActions.convertFormat),
+                    symbol: "arrow.triangle.2.circlepath",
+                    target: actions)
+            addItem(to: menu, title: "Compress…",
+                    selector: #selector(ShelfItemActions.compressImage),
+                    symbol: "arrow.down.to.line.compact",
+                    target: actions)
+            addItem(to: menu, title: "Remove Metadata",
+                    selector: #selector(ShelfItemActions.removeMetadata),
+                    symbol: "tag.slash",
+                    target: actions)
+            addItem(to: menu, title: "Create PDF",
+                    selector: #selector(ShelfItemActions.createPDF),
+                    symbol: "doc.badge.plus",
+                    target: actions)
+
+            menu.addItem(.separator())
+            menu.addItem(sectionHeader("General Actions"))
+        }
 
         let open = NSMenuItem(
             title: "Open",
@@ -253,6 +344,36 @@ enum ShelfContextMenu {
         menu.addItem(remove)
 
         return menu
+    }
+
+    private static func sectionHeader(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]
+        )
+        return item
+    }
+
+    @MainActor
+    private static func addItem(
+        to menu: NSMenu,
+        title: String,
+        selector: Selector,
+        symbol: String,
+        target: AnyObject
+    ) {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = target
+        if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
+            image.isTemplate = true
+            item.image = image
+        }
+        menu.addItem(item)
     }
 
     private static func appDisplayName(_ url: URL) -> String {
