@@ -70,8 +70,22 @@ struct ShelfContainerView: View {
                 DropTargetOverlay(active: dropTargeted && !manager.isDragging)
             }
         }
+        // `UTType.item` is the root of the UTI hierarchy — registering it
+        // makes SwiftUI accept any drag. The other specific types stay in
+        // the list because SwiftUI restricts which identifiers we're
+        // allowed to call `loadItem(forTypeIdentifier:)` against to those
+        // listed here; without them, file/text/image loads silently
+        // return nothing.
         .onDrop(
-            of: [UTType.fileURL, UTType.image, UTType.plainText, UTType.utf8PlainText],
+            of: [
+                UTType.item,
+                UTType.fileURL,
+                UTType.url,
+                UTType.image,
+                UTType.plainText,
+                UTType.utf8PlainText,
+                UTType.data,
+            ],
             isTargeted: $dropTargeted,
             perform: handleDrop
         )
@@ -125,6 +139,55 @@ struct ShelfContainerView: View {
                     guard let url else { return }
                     Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
                 }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.folder.identifier)
+                        || provider.hasItemConformingToTypeIdentifier(UTType.directory.identifier) {
+                // Folder drag: Finder offers BOTH `public.folder` and a
+                // synthesized `public.zip-archive` representation. The
+                // typed-data fallback below would happily pick the zip
+                // (because it has a .zip filename extension) and stage
+                // it as a random archive. Match the folder type first
+                // and pull the actual directory via loadFileRepresentation
+                // so the entry shows up as the original folder.
+                handled = true
+                let folderUTI = provider.hasItemConformingToTypeIdentifier(UTType.folder.identifier)
+                    ? UTType.folder.identifier
+                    : UTType.directory.identifier
+                _ = provider.loadFileRepresentation(forTypeIdentifier: folderUTI) { tempURL, _ in
+                    guard let tempURL else { return }
+                    // The system deletes tempURL after this callback
+                    // returns, so copy into our managed temp directory.
+                    let dest = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(tempURL.lastPathComponent)
+                    try? FileManager.default.removeItem(at: dest)
+                    do {
+                        try FileManager.default.copyItem(at: tempURL, to: dest)
+                        Task { @MainActor in manager.addFile(url: dest, to: targetShelfID) }
+                    } catch {
+                        NSLog("Shelf: failed to copy dropped folder: \(error)")
+                    }
+                }
+            } else if let typeID = provider.registeredTypeIdentifiers.first(where: {
+                // A registered UTI with a preferred filename extension
+                // (e.g. `net.daringfireball.markdown` → "md", `public.swift-source`
+                // → "swift") signals that this is a real file drag — even
+                // when SwiftUI hasn't surfaced `public.file-url` and there's
+                // no `suggestedName`. Pull the bytes and stage as a temp
+                // file so the entry shows up as a proper file rather than
+                // being misclassified as a text snippet by the next branch.
+                UTType($0)?.preferredFilenameExtension != nil
+            }) {
+                handled = true
+                let suggested = provider.suggestedName ?? "Dropped"
+                provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
+                    guard let data, !data.isEmpty else { return }
+                    let url = Self.stageTempFile(
+                        data: data,
+                        suggestedName: suggested,
+                        typeID: typeID
+                    )
+                    guard let url else { return }
+                    Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
+                }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 handled = true
                 provider.loadDataRepresentation(
@@ -173,9 +236,57 @@ struct ShelfContainerView: View {
                     guard let text, !text.isEmpty else { return }
                     Task { @MainActor in manager.addText(text, to: targetShelfID) }
                 }
+            } else if let typeID = provider.registeredTypeIdentifiers.first {
+                // Final catch-all: load whatever data we can and stage it.
+                handled = true
+                let suggested = provider.suggestedName ?? "Dropped"
+                provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
+                    guard let data, !data.isEmpty else { return }
+                    let url = Self.stageTempFile(
+                        data: data,
+                        suggestedName: suggested,
+                        typeID: typeID
+                    )
+                    guard let url else { return }
+                    Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
+                }
             }
         }
         return handled
+    }
+
+    /// Writes drag payload data to a temp file using the suggested filename
+    /// (extension preserved when present) so the shelf can display it as a
+    /// regular file entry. The hash suffix dedupes repeat drops of the same
+    /// content under the shelf's "already on shelf" check.
+    private static func stageTempFile(
+        data: Data,
+        suggestedName: String,
+        typeID: String
+    ) -> URL? {
+        let stem: String
+        let ext: String
+        if let dotRange = suggestedName.range(of: ".", options: .backwards) {
+            stem = String(suggestedName[..<dotRange.lowerBound])
+            ext = String(suggestedName[dotRange.upperBound...])
+        } else {
+            stem = suggestedName
+            ext = UTType(typeID)?.preferredFilenameExtension ?? "bin"
+        }
+        let digest = SHA256.hash(data: data)
+        let hash = digest.map { String(format: "%02x", $0) }.joined().prefix(8)
+        let safeStem = stem.isEmpty ? "Dropped" : stem
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(safeStem)-\(hash).\(ext)")
+        do {
+            if !FileManager.default.fileExists(atPath: tmp.path) {
+                try data.write(to: tmp)
+            }
+            return tmp
+        } catch {
+            NSLog("Shelf: failed to stage dropped data: \(error)")
+            return nil
+        }
     }
 
     private func toggle(to expanded: Bool) {

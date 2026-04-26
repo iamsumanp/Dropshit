@@ -387,9 +387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let handle: (NSEvent) -> Void = { [weak self] _ in
             guard let self else { return }
             self.disarmShakeReleaseWatcher()
-            // Drop handlers run asynchronously after mouseUp; give them a chance
-            // to land before deciding whether the shelf should close.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            // Drop handlers run asynchronously after mouseUp — NSItemProvider
+            // load + temp-file write + MainActor hop. 1.2s gives the chain
+            // time to land before we decide whether to close the shelf.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 guard let self else { return }
                 if self.manager.items(of: shelfID).count == self.itemCountOnShakeOpen,
                    let panel = self.panels[shelfID], panel.isVisible {
