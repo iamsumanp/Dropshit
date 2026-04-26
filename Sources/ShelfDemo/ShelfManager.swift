@@ -2,11 +2,27 @@ import AppKit
 import Combine
 import Foundation
 import QuickLookThumbnailing
+import UniformTypeIdentifiers
 
 @MainActor
 final class ShelfManager: ObservableObject {
     @Published private(set) var shelves: [Shelf]
     @Published var isDragging: Bool = false
+    /// True while *any* visible shelf panel is currently being targeted by
+    /// an in-flight drop. Used by the status item to swap its icon glyph.
+    @Published private(set) var isAnyShelfDropTarget: Bool = false
+
+    private var dropTargetedShelves: Set<UUID> = []
+
+    func setDropTargeted(shelfID: UUID, _ targeted: Bool) {
+        if targeted {
+            dropTargetedShelves.insert(shelfID)
+        } else {
+            dropTargetedShelves.remove(shelfID)
+        }
+        let any = !dropTargetedShelves.isEmpty
+        if isAnyShelfDropTarget != any { isAnyShelfDropTarget = any }
+    }
 
     // Emits the shelfID that rejected a duplicate file/folder.
     let duplicateRejected = PassthroughSubject<UUID, Never>()
@@ -148,6 +164,24 @@ final class ShelfManager: ObservableObject {
         shelves[idx].items.removeAll()
     }
 
+    /// Drops items whose backing file is gone (e.g. moved to Trash from
+    /// Finder while the shelf was open). Text items have no fileURL and are
+    /// always kept. Returns the number of items removed.
+    @discardableResult
+    func pruneMissingFiles() -> Int {
+        let fm = FileManager.default
+        var removed = 0
+        for sIdx in shelves.indices {
+            let before = shelves[sIdx].items.count
+            shelves[sIdx].items.removeAll { item in
+                guard let url = item.fileURL else { return false }
+                return !fm.fileExists(atPath: url.path)
+            }
+            removed += before - shelves[sIdx].items.count
+        }
+        return removed
+    }
+
     enum RenameError: LocalizedError {
         case itemNotFound
         case missingURL
@@ -205,7 +239,9 @@ final class ShelfManager: ObservableObject {
             textContent: old.textContent,
             thumbnail: old.thumbnail,
             thumbnailIsIcon: old.thumbnailIsIcon,
-            createdAt: old.createdAt
+            createdAt: old.createdAt,
+            pixelSize: old.pixelSize,
+            pageCount: old.pageCount
         )
     }
 
@@ -216,15 +252,29 @@ final class ShelfManager: ObservableObject {
             duplicateRejected.send(shelfID)
             return nil
         }
-        let ext = url.pathExtension.lowercased()
-        let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "tiff", "bmp", "webp"]
-        let type: ShelfItem.ItemType = imageExts.contains(ext) ? .image : .file
+        // Use UTType conformance instead of a hardcoded extension list so RAW
+        // formats (CR2, NEF, ARW, DNG, etc.) and newer codecs (AVIF, HEIF) all
+        // get image-style flush rendering rather than the doc-card white frame.
+        let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey])
+            .contentType)
+        let isImage = contentType?.conforms(to: .image) ?? false
+        let type: ShelfItem.ItemType = isImage ? .image : .file
         let placeholder = NSWorkspace.shared.icon(forFile: url.path)
-        let item = ShelfItem(type: type, fileURL: url, thumbnail: placeholder)
+        let pixelSize = isImage ? ShelfItem.readImagePixelSize(url: url) : nil
+        let pageCount = (contentType?.conforms(to: .pdf) ?? false)
+            ? ShelfItem.readPDFPageCount(url: url) : nil
+        let item = ShelfItem(
+            type: type,
+            fileURL: url,
+            thumbnail: placeholder,
+            pixelSize: pixelSize,
+            pageCount: pageCount
+        )
         addItem(item, to: shelfID)
         generateThumbnail(for: url, replacing: item.id)
         return item
     }
+
 
     @discardableResult
     func addText(_ text: String, to shelfID: UUID) -> ShelfItem? {
@@ -294,7 +344,9 @@ final class ShelfManager: ObservableObject {
                     textContent: old.textContent,
                     thumbnail: image,
                     thumbnailIsIcon: isIcon,
-                    createdAt: old.createdAt
+                    createdAt: old.createdAt,
+                    pixelSize: old.pixelSize,
+                    pageCount: old.pageCount
                 )
                 return
             }

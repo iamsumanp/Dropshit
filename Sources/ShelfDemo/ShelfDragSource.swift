@@ -13,6 +13,11 @@ struct ShelfDragOverlay: NSViewRepresentable {
     var menuBuilder: (() -> NSMenu?)? = nil
     var onClick: ((NSEvent.ModifierFlags) -> Void)? = nil
     var onDoubleClick: (() -> Void)? = nil
+    /// Optional explicit visible card size, in points. When the SwiftUI
+    /// hosting view sizes the overlay larger than the actual card (because
+    /// of shadows, scale effects, or sibling overlays), this lets us
+    /// snapshot only the card and avoid pulling in the dark panel backdrop.
+    var visibleCardSize: (() -> CGSize)? = nil
 
     func makeNSView(context: Context) -> DragInitiatorView {
         let view = DragInitiatorView()
@@ -22,6 +27,7 @@ struct ShelfDragOverlay: NSViewRepresentable {
         view.menuBuilder = menuBuilder
         view.onClick = onClick
         view.onDoubleClick = onDoubleClick
+        view.visibleCardSize = visibleCardSize
         return view
     }
 
@@ -32,6 +38,7 @@ struct ShelfDragOverlay: NSViewRepresentable {
         nsView.menuBuilder = menuBuilder
         nsView.onClick = onClick
         nsView.onDoubleClick = onDoubleClick
+        nsView.visibleCardSize = visibleCardSize
     }
 }
 
@@ -42,6 +49,7 @@ final class DragInitiatorView: NSView, NSDraggingSource, NSFilePromiseProviderDe
     var menuBuilder: (() -> NSMenu?)?
     var onClick: ((NSEvent.ModifierFlags) -> Void)?
     var onDoubleClick: (() -> Void)?
+    var visibleCardSize: (() -> CGSize)?
 
     private var mouseDownPoint: NSPoint?
     private var sessionActive = false
@@ -105,8 +113,23 @@ final class DragInitiatorView: NSView, NSDraggingSource, NSFilePromiseProviderDe
         }
         guard !urls.isEmpty else { return }
 
-        let local = convert(event.locationInWindow, from: nil)
-        let iconSize: CGFloat = 64
+        // Snapshot the actual rendered tile *before* notifying the source
+        // (which fades the tile out). Use the caller-provided visible card
+        // size when available — SwiftUI's overlay host can be larger than
+        // the visible card (because of sibling overlays / hover effects),
+        // so snapshotting plain `bounds` would pull in the dark panel
+        // backdrop and surround the drag preview with a black frame.
+        let cardSize = visibleCardSize?() ?? bounds.size
+        let cw = min(cardSize.width, bounds.width)
+        let ch = min(cardSize.height, bounds.height)
+        let snapshotRect = NSRect(
+            x: (bounds.width - cw) / 2,
+            y: (bounds.height - ch) / 2,
+            width: cw,
+            height: ch
+        )
+        let dragImage = snapshotTile(rectInSelf: snapshotRect)
+            ?? NSWorkspace.shared.icon(forFile: urls[0].path)
 
         var draggingItems: [NSDraggingItem] = []
         for (index, url) in urls.enumerated() {
@@ -115,21 +138,24 @@ final class DragInitiatorView: NSView, NSDraggingSource, NSFilePromiseProviderDe
             // Critically, destinations honor pathExtension correctly even for
             // unregistered UTIs (e.g. .cube), so collisions become "name 2.cube"
             // rather than "name.cube 2".
+            //
+            // We also vend `public.file-url` directly (via FileURLPromiseProvider)
+            // so that non-Finder destinations — browsers, web upload zones, and
+            // most native apps — can read the source URL straight off the
+            // pasteboard. Without this, only Finder honors the drag.
             let typeID = (try? url.resourceValues(forKeys: [.contentTypeKey])
                 .contentType?.identifier) ?? UTType.data.identifier
-            let promise = NSFilePromiseProvider(fileType: typeID, delegate: self)
+            let promise = FileURLPromiseProvider(fileType: typeID, delegate: self)
             promise.userInfo = url
             let item = NSDraggingItem(pasteboardWriter: promise)
-            let icon = NSWorkspace.shared.icon(forFile: url.path)
-            icon.size = NSSize(width: iconSize, height: iconSize)
-            let off = CGFloat(index) * 1.5
+            let off = CGFloat(index) * 4
             let frame = NSRect(
-                x: local.x - iconSize / 2 + off,
-                y: local.y - iconSize / 2 - off,
-                width: iconSize,
-                height: iconSize
+                x: snapshotRect.minX + off,
+                y: snapshotRect.minY - off,
+                width: snapshotRect.width,
+                height: snapshotRect.height
             )
-            item.setDraggingFrame(frame, contents: icon)
+            item.setDraggingFrame(frame, contents: dragImage)
             draggingItems.append(item)
         }
 
@@ -138,6 +164,43 @@ final class DragInitiatorView: NSView, NSDraggingSource, NSFilePromiseProviderDe
         let session = beginDraggingSession(with: draggingItems, event: event, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = true
         session.draggingFormation = .stack
+    }
+
+    /// Renders the underlying SwiftUI tile (everything beneath this transparent
+    /// overlay) into a bitmap so the drag preview matches the visible UI
+    /// instead of a generic file icon.
+    private func snapshotTile(rectInSelf: NSRect) -> NSImage? {
+        guard let window = window,
+              let rootLayer = window.contentView?.layer
+        else { return nil }
+        guard rectInSelf.width > 0, rectInSelf.height > 0 else { return nil }
+
+        let scale = window.backingScaleFactor
+        let pixelW = Int(ceil(rectInSelf.width * scale))
+        let pixelH = Int(ceil(rectInSelf.height * scale))
+        guard pixelW > 0, pixelH > 0 else { return nil }
+
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: pixelW,
+            height: pixelH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        ctx.scaleBy(x: scale, y: scale)
+
+        // Translate so the snapshot rect's origin (in window coords) becomes (0,0).
+        let rectInWindow = convert(rectInSelf, to: nil)
+        ctx.translateBy(x: -rectInWindow.minX, y: -rectInWindow.minY)
+
+        rootLayer.render(in: ctx)
+
+        guard let cgImage = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: cgImage, size: rectInSelf.size)
     }
 
     // MARK: - NSDraggingSource
@@ -193,5 +256,31 @@ final class DragInitiatorView: NSView, NSDraggingSource, NSFilePromiseProviderDe
 
     func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue {
         Self.promiseQueue
+    }
+}
+
+/// NSFilePromiseProvider that *also* writes `public.file-url` to the pasteboard.
+/// Browsers and most web drop zones read the file URL directly rather than
+/// honoring file promises, so without this they ignore the drag.
+final class FileURLPromiseProvider: NSFilePromiseProvider {
+    override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        var types = super.writableTypes(for: pasteboard)
+        types.append(.fileURL)
+        return types
+    }
+
+    override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        if type == .fileURL, let url = userInfo as? URL {
+            return (url as NSURL).pasteboardPropertyList(forType: .fileURL)
+        }
+        return super.pasteboardPropertyList(forType: type)
+    }
+
+    override func writingOptions(
+        forType type: NSPasteboard.PasteboardType,
+        pasteboard: NSPasteboard
+    ) -> NSPasteboard.WritingOptions {
+        if type == .fileURL { return [] }
+        return super.writingOptions(forType: type, pasteboard: pasteboard)
     }
 }

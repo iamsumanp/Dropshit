@@ -108,13 +108,19 @@ final class ShelfStore {
                     ), fm.fileExists(atPath: url.path) {
                         let type: ShelfItem.ItemType = (record.type == "image") ? .image : .file
                         let icon = NSWorkspace.shared.icon(forFile: url.path)
+                        let pixelSize = (type == .image)
+                            ? ShelfItem.readImagePixelSize(url: url) : nil
+                        let isPDF = url.pathExtension.lowercased() == "pdf"
+                        let pageCount = isPDF ? ShelfItem.readPDFPageCount(url: url) : nil
                         items.append(ShelfItem(
                             id: record.id,
                             type: type,
                             fileURL: url,
                             textContent: nil,
                             thumbnail: icon,
-                            createdAt: record.createdAt
+                            createdAt: record.createdAt,
+                            pixelSize: pixelSize,
+                            pageCount: pageCount
                         ))
                         if stale { anyStale = true }
                     }

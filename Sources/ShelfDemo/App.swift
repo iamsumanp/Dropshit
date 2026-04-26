@@ -49,10 +49,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // user's configured retention duration (in @AppStorage as `shelf.expiryDays`).
     private var expiryTimer: Timer?
 
+    // Polls for files that disappeared (e.g. moved to Trash from Finder) so
+    // ghost entries vanish from the shelf without requiring user interaction.
+    private var missingFileSweepTimer: Timer?
+
+    private var statusItemIconCancellable: AnyCancellable?
+
+    private func applyStatusIcon(dropping: Bool) {
+        guard let button = statusItem?.button else { return }
+        // Custom-drawn glyph: rounded-square outline with the dot fully
+        // inside the frame at the top-right (the SF `app.badge` symbol
+        // parks the dot at the corner so it pokes out of the outline).
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+            let outline = NSBezierPath(
+                roundedRect: rect.insetBy(dx: 1.75, dy: 1.75),
+                xRadius: 4,
+                yRadius: 4
+            )
+            outline.lineWidth = 1.6
+            NSColor.black.setStroke()
+            outline.stroke()
+
+            // Slightly larger dot when a drop is active for visual emphasis.
+            let dotSize: CGFloat = dropping ? 5 : 4
+            let inset: CGFloat = 3.5
+            let dotRect = NSRect(
+                x: rect.maxX - inset - dotSize,
+                y: rect.maxY - inset - dotSize,
+                width: dotSize,
+                height: dotSize
+            )
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
+            return true
+        }
+        image.isTemplate = true
+        button.image = image
+    }
+
     private let collapsedSize = NSSize(width: 210, height: 210)
     private let expandedSize = NSSize(width: 520, height: 560)
+    private let expandedMinHeight: CGFloat = 280
     private let dockedSize = NSSize(width: 44, height: 150)
     private let dockedOffscreen: CGFloat = 18  // hides the right-side curve past the screen edge
+
+    /// Compute an expanded panel size that hugs the actual content. Cap at
+    /// `expandedSize.height` so we never grow taller than the original max.
+    /// The ScrollView inside takes care of any overflow above the cap.
+    private func expandedSize(for shelfID: UUID) -> NSSize {
+        let count = manager.items(of: shelfID).count
+        // Constants mirror DocumentGridItem layout + ExpandedShelfView chrome.
+        let cellHeight: CGFloat = 154   // 8 + 100 + 8 + ~22 + 8 + 8 padding
+        let rowSpacing: CGFloat = 18
+        // Chrome = panel padding (20) + outer VStack header (~32) + spacing
+        // (14×2) + reveal pill (~32) + grid vertical inset (~8) + safety (4).
+        let chrome: CGFloat = 130
+
+        // Adaptive grid: minimum column 96, spacing 16. Available width is
+        // expanded panel width minus FloatingPanel padding (20).
+        let available = expandedSize.width - 20
+        let columns = max(1, Int((available + 16) / (96 + 16)))
+        let rows = max(1, (count + columns - 1) / columns)
+
+        let contentH = CGFloat(rows) * cellHeight
+            + CGFloat(max(rows - 1, 0)) * rowSpacing
+        let h = min(chrome + contentH, expandedSize.height)
+        return NSSize(width: expandedSize.width, height: max(h, expandedMinHeight))
+    }
 
     // Docked-to-edge state.
     private var dockedShelfIDs: Set<UUID> = []
@@ -65,13 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "square.stack.3d.up.fill",
-                accessibilityDescription: "Shelf"
-            )
-            button.image?.isTemplate = true
-        }
+        applyStatusIcon(dropping: false)
+        // Flip the glyph while any panel is being targeted by a drop so the
+        // menubar mirrors the "ready to receive" state visually.
+        statusItemIconCancellable = manager.$isAnyShelfDropTarget
+            .removeDuplicates()
+            .sink { [weak self] dropping in
+                self?.applyStatusIcon(dropping: dropping)
+            }
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -102,6 +166,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ) { [weak self] _ in
             Task { @MainActor in self?.runShelfExpiryPrune() }
         }
+
+        // Sweep stale entries (files trashed from Finder while we were idle).
+        // App activation isn't reliable for an accessory app, so back it up
+        // with a low-frequency timer that runs unconditionally — fileExists
+        // is cheap and the worst case is a few dozen stat calls per tick.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppOrFocusChange),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        manager.pruneMissingFiles()
+        missingFileSweepTimer = Timer.scheduledTimer(
+            withTimeInterval: 2.0, repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in self?.manager.pruneMissingFiles() }
+        }
+    }
+
+    @objc private func handleAppOrFocusChange() {
+        manager.pruneMissingFiles()
     }
 
     private func runShelfExpiryPrune() {
@@ -340,22 +425,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ephemeralShelfIDs.formIntersection(existingIDs)
         dockedShelfIDs.formIntersection(existingIDs)
         preDockFrames = preDockFrames.filter { existingIDs.contains($0.key) }
-        for (id, timer) in emptyCloseTimers where !existingIDs.contains(id) {
-            timer.invalidate()
-            emptyCloseTimers.removeValue(forKey: id)
-        }
-
-        for shelf in shelves {
-            guard ephemeralShelfIDs.contains(shelf.id) else { continue }
-            // Don't fight the shake-release watcher for the just-opened shelf.
-            if shelf.id == pendingShelfID { continue }
-
-            if shelf.items.isEmpty {
-                scheduleEmptyClose(for: shelf.id)
-            } else if let timer = emptyCloseTimers.removeValue(forKey: shelf.id) {
-                timer.invalidate()
-            }
-        }
+        // Auto-close on empty was disabled — the panel stays open until the
+        // user dismisses it explicitly via the X button. Tear down any
+        // lingering timers regardless of shelf liveness.
+        for (_, timer) in emptyCloseTimers { timer.invalidate() }
+        emptyCloseTimers.removeAll()
     }
 
     private func scheduleEmptyClose(for shelfID: UUID) {
@@ -390,6 +464,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Panel management
 
     private func openPanel(for shelfID: UUID, nearCursor: Bool) {
+        // Drop any items whose files have disappeared since we last looked,
+        // so a freshly-opened panel never shows ghost entries.
+        manager.pruneMissingFiles()
+
         let panel: FloatingPanel<ShelfContainerView>
         if let existing = panels[shelfID] {
             panel = existing
@@ -399,7 +477,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let expanded = expandedShelfIDs.contains(shelfID)
-        let size = expanded ? expandedSize : collapsedSize
+        let size = expanded ? expandedSize(for: shelfID) : collapsedSize
 
         if nearCursor {
             positionPanelNearCursor(panel, size: size)
@@ -432,7 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let panel = panels[shelfID] else { return }
         if expanded { expandedShelfIDs.insert(shelfID) } else { expandedShelfIDs.remove(shelfID) }
 
-        let newSize = expanded ? expandedSize : collapsedSize
+        let newSize = expanded ? expandedSize(for: shelfID) : collapsedSize
 
         let currentFrame = panel.frame
         let topY = currentFrame.maxY
@@ -485,7 +563,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let saved = preDockFrames.removeValue(forKey: shelfID) {
                 restore = saved
             } else {
-                let size = expandedShelfIDs.contains(shelfID) ? expandedSize : collapsedSize
+                let size = expandedShelfIDs.contains(shelfID) ? expandedSize(for: shelfID) : collapsedSize
                 let currentFrame = panel.frame
                 let screenFrame = panel.screen?.visibleFrame
                     ?? NSScreen.main?.visibleFrame
@@ -553,7 +631,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preDockFrames.removeValue(forKey: shelfID)
         if dockedShelfIDs.isEmpty { removeWindowMoveObserver() }
 
-        let size = expandedShelfIDs.contains(shelfID) ? expandedSize : collapsedSize
+        let size = expandedShelfIDs.contains(shelfID) ? expandedSize(for: shelfID) : collapsedSize
         // Keep the current top-left roughly where the user let go.
         let topY = fromFrame.maxY
         let newFrame = NSRect(

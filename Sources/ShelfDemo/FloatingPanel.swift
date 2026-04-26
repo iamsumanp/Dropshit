@@ -110,8 +110,10 @@ private struct FloatingPanelContent<Content: View>: View {
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
                 .allowsHitTesting(false)
 
+            // No padding here — each shelf view applies its own margin so
+            // that compact states (e.g. docked) can fill the panel edge-to-
+            // edge and accept drops across the full visible surface.
             content
-                .padding(10)
         }
         .ignoresSafeArea()
     }

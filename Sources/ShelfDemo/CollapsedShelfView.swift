@@ -6,6 +6,11 @@ struct CollapsedShelfView: View {
     let shelfID: UUID
     var items: [ShelfItem] = []
     var isDragging: Bool = false
+    /// Owned by the parent so the flag survives the expanded↔collapsed
+    /// view swap. Lets us show the X on the empty state after the user
+    /// has emptied a shelf, while keeping it hidden during an in-flight
+    /// shake gesture (shelf starts empty and items haven't landed yet).
+    var showCloseWhenEmpty: Bool = false
     var onClose: () -> Void = {}
     var onOpenDocuments: () -> Void = {}
     var onDock: () -> Void = {}
@@ -29,6 +34,16 @@ struct CollapsedShelfView: View {
                     .foregroundStyle(Color.white.opacity(0.55))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .matchedGeometryEffect(id: ShelfMatchedGeometry.card, in: namespace)
+
+                if showCloseWhenEmpty {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 6) {
+                            CircularIconButton(systemName: "xmark", action: onClose)
+                            Spacer()
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
             } else {
                 StackedDocumentPreview(
                     namespace: namespace,
@@ -116,12 +131,57 @@ private struct StackedDocumentPreview: View {
                     .zIndex(Double(idx))
             }
         }
-        .frame(width: 150, height: 170)
+        .frame(width: 160, height: 170)
+    }
+
+    /// Card footprint that honors the image's true aspect ratio so a landscape
+    /// photo isn't cropped into a portrait box (and vice versa). The longer
+    /// side is capped at `longSide` to keep the stack visually balanced.
+    private static func cardSize(for image: NSImage) -> CGSize {
+        let portraitFallback = CGSize(width: 92, height: 118)
+        guard let aspect = aspectRatio(of: image), aspect.isFinite, aspect > 0
+        else { return portraitFallback }
+        let longSide: CGFloat = 122
+        if aspect >= 1 {
+            return CGSize(width: longSide, height: longSide / aspect)
+        } else {
+            return CGSize(width: longSide * aspect, height: longSide)
+        }
+    }
+
+    private static func aspectRatio(of image: NSImage) -> CGFloat? {
+        // Pixel dimensions on the underlying representation are the most
+        // reliable source — NSImage.size can lie when the image has multiple
+        // reps or has been resized by Quick Look.
+        if let rep = image.representations.first {
+            let w = CGFloat(rep.pixelsWide)
+            let h = CGFloat(rep.pixelsHigh)
+            if w > 0, h > 0 { return w / h }
+        }
+        let s = image.size
+        if s.width > 0, s.height > 0 { return s.width / s.height }
+        return nil
     }
 
     @ViewBuilder
     private func cardView(for item: ShelfItem, isFront: Bool) -> some View {
-        if renderFlush(for: item), let thumb = item.thumbnail {
+        if item.type == .image, let thumb = item.thumbnail {
+            let size = Self.cardSize(for: thumb)
+            Image(nsImage: thumb)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(isFront ? 0.28 : 0.18),
+                        radius: isFront ? 14 : 8,
+                        x: 0, y: isFront ? 6 : 3)
+                .modifier(FrontMatchedGeometry(active: isFront, namespace: namespace))
+        } else if item.thumbnailIsIcon, let thumb = item.thumbnail {
             Image(nsImage: thumb)
                 .resizable()
                 .interpolation(.high)
@@ -152,10 +212,6 @@ private struct StackedDocumentPreview: View {
         }
     }
 
-    private func renderFlush(for item: ShelfItem) -> Bool {
-        if item.type == .image { return true }
-        return item.thumbnailIsIcon
-    }
 }
 
 private struct ThumbnailView: View {

@@ -15,6 +15,10 @@ struct ShelfContainerView: View {
     @State private var isDocked = false
     @State private var dropTargeted = false
     @State private var selection: Set<UUID> = []
+    // Sticky once true: lets the collapsed view show its X close button
+    // after the user empties a populated shelf, but stays hidden while a
+    // shake gesture is mid-flight (shelf created empty, no items yet).
+    @State private var hasEverHadItems = false
 
     private var items: [ShelfItem] { manager.items(of: shelfID) }
 
@@ -39,6 +43,7 @@ struct ShelfContainerView: View {
                     onCollapse: { toggle(to: false) },
                     onClose: onClose
                 )
+                .padding(10)
                 .transition(.opacity)
             } else {
                 CollapsedShelfView(
@@ -47,12 +52,14 @@ struct ShelfContainerView: View {
                     shelfID: shelfID,
                     items: items,
                     isDragging: manager.isDragging,
+                    showCloseWhenEmpty: hasEverHadItems,
                     onClose: onClose,
                     onOpenDocuments: { toggle(to: true) },
                     onDock: { toggleDock(to: true) },
                     onDragStart: { manager.isDragging = true },
                     onDragEnd: { manager.isDragging = false }
                 )
+                .padding(10)
                 .transition(.opacity)
             }
         }
@@ -71,6 +78,26 @@ struct ShelfContainerView: View {
         .onReceive(manager.undockRequested) { id in
             guard id == shelfID, isDocked else { return }
             withAnimation(transitionAnimation) { isDocked = false }
+        }
+        // Empty-but-expanded is a dead-end UX (nothing to do, nothing to
+        // show), so fall back to collapsed and let that view handle the
+        // empty case.
+        .onChange(of: items.count) { newCount in
+            if newCount == 0, isExpanded {
+                toggle(to: false)
+            }
+            if newCount > 0 { hasEverHadItems = true }
+        }
+        .onChange(of: dropTargeted) { newValue in
+            manager.setDropTargeted(shelfID: shelfID, newValue)
+        }
+        .onAppear {
+            if !items.isEmpty { hasEverHadItems = true }
+        }
+        .onDisappear {
+            // Make sure a panel that closes mid-drop doesn't leave its
+            // shelf marked as a drop target forever.
+            manager.setDropTargeted(shelfID: shelfID, false)
         }
     }
 
@@ -187,13 +214,17 @@ private struct DockedTabView: View {
                     .offset(x: -6)
             }
             .contentShape(Rectangle())
+            // Trace the panel's actual outer corner radius (22, set on the
+            // FloatingPanel rootLayer) so the highlight hugs the visible
+            // capsule instead of an inset rectangle. Negative padding pulls
+            // the stroke flush with the panel's outline; the right edge is
+            // clipped offscreen by the dock offset and never shows anyway.
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .strokeBorder(
                         Color.accentColor.opacity(dropTargeted ? 1 : 0),
                         lineWidth: 2
                     )
-                    .padding(1)
                     .allowsHitTesting(false)
             )
             .onHover { hovering = $0 }
@@ -225,8 +256,11 @@ private struct ExpandedShelfView: View {
 
     private var items: [ShelfItem] { manager.items(of: shelfID) }
 
+    // Adaptive columns let the row pack as many cards as fit; LazyVGrid's
+    // .center alignment then centers the row when there are fewer items than
+    // columns (so 1 or 2 files don't pin to the left).
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 20, alignment: .top), count: 3)
+        [GridItem(.adaptive(minimum: 96, maximum: 116), spacing: 16, alignment: .top)]
     }
 
     private var title: String {
@@ -240,6 +274,12 @@ private struct ExpandedShelfView: View {
             Spacer(minLength: 0)
             revealButton
         }
+        // Clear selection on any tap that wasn't claimed by a tile, header
+        // button, or the reveal pill. ShelfDragOverlay's NSView consumes
+        // tile clicks before they reach this gesture, so this only fires
+        // on empty/black-space clicks.
+        .contentShape(Rectangle())
+        .onTapGesture { selection.removeAll() }
     }
 
     private var header: some View {
@@ -268,15 +308,14 @@ private struct ExpandedShelfView: View {
 
     @ViewBuilder
     private var content: some View {
-        if items.isEmpty {
-            emptyState
-        } else {
-            switch viewMode {
-            case .grid:
-                grid
-            case .list:
-                list
-            }
+        // Empty case is handled by auto-collapsing in ShelfContainerView,
+        // so the expanded view only ever needs to render the populated grid
+        // or list.
+        switch viewMode {
+        case .grid:
+            grid
+        case .list:
+            list
         }
     }
 
@@ -292,7 +331,7 @@ private struct ExpandedShelfView: View {
         let target = shelfID
         let sel = $selection
         return ScrollView(.vertical, showsIndicators: false) {
-            LazyVGrid(columns: columns, alignment: .center, spacing: 22) {
+            LazyVGrid(columns: columns, alignment: .center, spacing: 18) {
                 ForEach(items) { item in
                     DocumentGridItem(
                         item: item,
@@ -331,8 +370,6 @@ private struct ExpandedShelfView: View {
                 .fill(Color.clear)
                 .matchedGeometryEffect(id: ShelfMatchedGeometry.card, in: namespace)
         )
-        .contentShape(Rectangle())
-        .onTapGesture { selection.removeAll() }
     }
 
     private var list: some View {
@@ -372,8 +409,6 @@ private struct ExpandedShelfView: View {
             .padding(.vertical, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture { selection.removeAll() }
     }
 
     private func handleClick(itemID: UUID, modifiers: NSEvent.ModifierFlags) {
@@ -386,34 +421,6 @@ private struct ExpandedShelfView: View {
         } else {
             selection = [itemID]
         }
-    }
-
-    private var emptyState: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(
-                Color.white.opacity(0.18),
-                style: StrokeStyle(lineWidth: 1, dash: [6, 6])
-            )
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.white.opacity(0.03))
-            )
-            .frame(maxWidth: .infinity)
-            .frame(height: 320)
-            .overlay(
-                VStack(spacing: 8) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 28, weight: .regular))
-                        .foregroundStyle(Color.white.opacity(0.45))
-                    Text("Shake files out of Finder")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.75))
-                    Text("or drop them here to add")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.white.opacity(0.45))
-                }
-            )
-            .matchedGeometryEffect(id: ShelfMatchedGeometry.card, in: namespace)
     }
 
     private var revealButton: some View {
@@ -445,10 +452,28 @@ private struct DocumentGridItem: View {
 
     @State private var hovering = false
 
+    private static let defaultCardSize = CGSize(width: 78, height: 100)
+    private static let cardLongSide: CGFloat = 100
+    private static let labelMinWidth: CGFloat = 90
+
+    private var cardSize: CGSize {
+        guard item.type == .image,
+              let thumb = item.thumbnail,
+              let aspect = Self.aspectRatio(of: thumb),
+              aspect.isFinite, aspect > 0
+        else { return Self.defaultCardSize }
+        if aspect >= 1 {
+            return CGSize(width: Self.cardLongSide, height: Self.cardLongSide / aspect)
+        } else {
+            return CGSize(width: Self.cardLongSide * aspect, height: Self.cardLongSide)
+        }
+    }
+
     var body: some View {
+        let size = cardSize
         VStack(spacing: 8) {
-            cardFace
-            .frame(width: 110, height: 140)
+            cardFace(size: size)
+            .frame(width: size.width, height: size.height)
             .shadow(color: .black.opacity(hovering ? 0.22 : 0.14),
                     radius: hovering ? 18 : 12, x: 0, y: hovering ? 10 : 6)
             .shadow(color: .black.opacity(0.06), radius: 2, x: 0, y: 1)
@@ -467,7 +492,8 @@ private struct DocumentGridItem: View {
                         if let url = item.fileURL {
                             NSWorkspace.shared.open(url)
                         }
-                    }
+                    },
+                    visibleCardSize: { size }
                 )
             )
             .overlay(alignment: .topTrailing) {
@@ -484,19 +510,23 @@ private struct DocumentGridItem: View {
             }
             .animation(.spring(response: 0.32, dampingFraction: 0.72), value: hovering)
             .onHover { hovering = $0 }
+            // Uniform vertical slot equal to the long-side cap so short
+            // (landscape) cards sit on the same baseline as tall (portrait)
+            // ones — that keeps the title/meta labels aligned across the row.
+            .frame(height: Self.cardLongSide, alignment: .bottom)
 
             VStack(spacing: 2) {
                 Text(item.displayName)
-                    .font(.system(size: 13))
+                    .font(.system(size: 11))
                     .foregroundStyle(Color.white.opacity(0.92))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(item.displayMeta)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                     .foregroundStyle(Color.white.opacity(isSelected ? 0.75 : 0.5))
                     .lineLimit(1)
             }
-            .frame(width: 110)
+            .frame(width: max(size.width, Self.labelMinWidth))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
@@ -509,21 +539,21 @@ private struct DocumentGridItem: View {
     }
 
     @ViewBuilder
-    private var cardFace: some View {
+    private func cardFace(size: CGSize) -> some View {
         if renderFlush, let thumb = item.thumbnail {
             if item.type == .image {
                 Image(nsImage: thumb)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 110, height: 140)
+                    .frame(width: size.width, height: size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             } else {
                 Image(nsImage: thumb)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 110, height: 140)
+                    .frame(width: size.width, height: size.height)
             }
         } else {
             ZStack {
@@ -537,6 +567,17 @@ private struct DocumentGridItem: View {
                     .padding(12)
             }
         }
+    }
+
+    private static func aspectRatio(of image: NSImage) -> CGFloat? {
+        if let rep = image.representations.first {
+            let w = CGFloat(rep.pixelsWide)
+            let h = CGFloat(rep.pixelsHigh)
+            if w > 0, h > 0 { return w / h }
+        }
+        let s = image.size
+        if s.width > 0, s.height > 0 { return s.width / s.height }
+        return nil
     }
 
     private var renderFlush: Bool {
@@ -577,8 +618,8 @@ private struct ViewModeToggle: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            segment(for: .grid, systemName: "square.grid.2x2.fill")
-            segment(for: .list, systemName: "list.bullet")
+            ViewModeSegment(target: .grid, systemName: "square.grid.2x2.fill", mode: $mode)
+            ViewModeSegment(target: .list, systemName: "list.bullet", mode: $mode)
         }
         .padding(2)
         .background(
@@ -590,23 +631,41 @@ private struct ViewModeToggle: View {
                 .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
         )
     }
+}
 
-    private func segment(for target: ShelfViewMode, systemName: String) -> some View {
+private struct ViewModeSegment: View {
+    let target: ShelfViewMode
+    let systemName: String
+    @Binding var mode: ShelfViewMode
+
+    @State private var hovering = false
+
+    var body: some View {
         let active = mode == target
-        return Button {
+        // contentShape() on the label is what makes the whole 26×22 area
+        // hit-testable — without it, only the icon glyph itself catches
+        // clicks and the list icon "feels dead" until hovered.
+        Button {
             mode = target
         } label: {
             Image(systemName: systemName)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(active ? 0.95 : 0.55))
+                .foregroundStyle(Color.white.opacity(active ? 0.98 : (hovering ? 0.85 : 0.55)))
                 .frame(width: 26, height: 22)
                 .background(
                     Capsule(style: .continuous)
-                        .fill(Color.white.opacity(active ? 0.18 : 0))
+                        .fill(
+                            Color.white.opacity(
+                                active ? 0.20 : (hovering ? 0.10 : 0)
+                            )
+                        )
                 )
+                .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.15), value: active)
+        .animation(.easeOut(duration: 0.15), value: hovering)
     }
 }
 
@@ -625,21 +684,21 @@ private struct DocumentListItem: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             thumbnail
-                .frame(width: 28, height: 28)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
 
             Text(item.displayName)
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .foregroundStyle(Color.white.opacity(0.92))
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
 
             Text(item.displayMeta)
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundStyle(Color.white.opacity(isSelected ? 0.8 : 0.5))
                 .lineLimit(1)
 
@@ -647,7 +706,7 @@ private struct DocumentListItem: View {
                 if hovering {
                     Button(action: onRemove) {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: 13))
                             .foregroundStyle(Color.black.opacity(0.5), Color.white.opacity(0.95))
                     }
                     .buttonStyle(.plain)
@@ -655,14 +714,14 @@ private struct DocumentListItem: View {
                     Color.clear
                 }
             }
-            .frame(width: 18, height: 18)
+            .frame(width: 16, height: 16)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.accentColor.opacity(isSelected ? 1 : 0))
         )
         .overlay(
@@ -701,21 +760,21 @@ private struct DocumentListItem: View {
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
-                        .padding(3)
+                        .padding(2)
                 }
             }
         } else if item.type == .text {
             ZStack {
                 Color.white.opacity(0.10)
                 Image(systemName: "text.alignleft")
-                    .font(.system(size: 13, weight: .regular))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.white.opacity(0.7))
             }
         } else {
             ZStack {
                 Color.white.opacity(0.10)
                 Image(systemName: "doc")
-                    .font(.system(size: 13, weight: .regular))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundStyle(Color.white.opacity(0.7))
             }
         }
@@ -745,9 +804,12 @@ private struct DropTargetOverlay: View {
     let active: Bool
 
     var body: some View {
+        // Trace the panel's outer rounded shape directly. Earlier this
+        // overlay used `.padding(-10)` to push out past FloatingPanelContent's
+        // 10pt margin, but that padding has since moved into each shelf
+        // branch — extending here would just clip beyond the panel bounds.
         RoundedRectangle(cornerRadius: 22, style: .continuous)
             .strokeBorder(Color.accentColor.opacity(active ? 1 : 0), lineWidth: 3)
-            .padding(-10)
             .animation(.easeOut(duration: 0.15), value: active)
             .allowsHitTesting(false)
     }

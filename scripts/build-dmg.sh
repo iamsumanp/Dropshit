@@ -21,6 +21,12 @@ echo "==> Cleaning dist/"
 rm -rf dist
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 
+echo "==> Regenerating AppIcon.icns"
+ICONSET_TMP="$(mktemp -d)/AppIcon.iconset"
+swift scripts/make-icon.swift "${ICONSET_TMP}"
+iconutil -c icns -o "Sources/${BIN_NAME}/Resources/AppIcon.icns" "${ICONSET_TMP}"
+rm -rf "${ICONSET_TMP%/*}"
+
 echo "==> Building release binary"
 swift build -c release
 
@@ -39,6 +45,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>${APP_NAME}</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>${APP_NAME}</string>
