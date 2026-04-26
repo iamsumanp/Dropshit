@@ -177,17 +177,12 @@ struct ShelfContainerView: View {
                 UTType($0)?.preferredFilenameExtension != nil
             }) {
                 handled = true
-                let suggested = provider.suggestedName ?? "Dropped"
-                provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
-                    guard let data, !data.isEmpty else { return }
-                    let url = Self.stageTempFile(
-                        data: data,
-                        suggestedName: suggested,
-                        typeID: typeID
-                    )
-                    guard let url else { return }
-                    Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
-                }
+                Self.stageFromProvider(
+                    provider: provider,
+                    typeID: typeID,
+                    targetShelfID: targetShelfID,
+                    manager: manager
+                )
             } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 handled = true
                 provider.loadDataRepresentation(
@@ -239,20 +234,54 @@ struct ShelfContainerView: View {
             } else if let typeID = provider.registeredTypeIdentifiers.first {
                 // Final catch-all: load whatever data we can and stage it.
                 handled = true
-                let suggested = provider.suggestedName ?? "Dropped"
-                provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
-                    guard let data, !data.isEmpty else { return }
-                    let url = Self.stageTempFile(
-                        data: data,
-                        suggestedName: suggested,
-                        typeID: typeID
-                    )
-                    guard let url else { return }
-                    Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
-                }
+                Self.stageFromProvider(
+                    provider: provider,
+                    typeID: typeID,
+                    targetShelfID: targetShelfID,
+                    manager: manager
+                )
             }
         }
         return handled
+    }
+
+    /// Tries to stage a dropped item by its file representation first so the
+    /// original filename survives (works for both real file URLs and file
+    /// promises), and only falls back to writing the raw data with a
+    /// synthesized name when the source has no file representation.
+    private static func stageFromProvider(
+        provider: NSItemProvider,
+        typeID: String,
+        targetShelfID: UUID,
+        manager: ShelfManager
+    ) {
+        _ = provider.loadFileRepresentation(forTypeIdentifier: typeID) { tempURL, _ in
+            if let tempURL {
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(tempURL.lastPathComponent)
+                try? FileManager.default.removeItem(at: dest)
+                do {
+                    try FileManager.default.copyItem(at: tempURL, to: dest)
+                    Task { @MainActor in manager.addFile(url: dest, to: targetShelfID) }
+                    return
+                } catch {
+                    NSLog("Shelf: failed to copy dropped file representation: \(error)")
+                }
+            }
+            // No file representation — fall back to raw data with the
+            // suggested name (or "Dropped" if even that is missing).
+            let suggested = provider.suggestedName ?? "Dropped"
+            provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
+                guard let data, !data.isEmpty else { return }
+                let url = stageTempFile(
+                    data: data,
+                    suggestedName: suggested,
+                    typeID: typeID
+                )
+                guard let url else { return }
+                Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
+            }
+        }
     }
 
     /// Writes drag payload data to a temp file using the suggested filename
