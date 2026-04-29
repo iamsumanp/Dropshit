@@ -99,6 +99,37 @@ private final class ShelfActionTargets: NSObject {
         manager.clear(shelfID: shelfID)
     }
 
+    // MARK: - Identity
+
+    @objc func renameShelf() {
+        let current = manager.shelf(id: shelfID)?.name ?? ""
+        guard let new = Self.promptShelfName(current: current) else { return }
+        manager.renameShelf(id: shelfID, to: new)
+    }
+
+    @objc func togglePinned() {
+        let current = manager.shelf(id: shelfID)?.pinned ?? false
+        manager.setShelfPinned(id: shelfID, !current)
+    }
+
+    @objc func setAccentColor(_ sender: NSMenuItem) {
+        guard let hex = sender.representedObject as? String else { return }
+        manager.setShelfAccent(id: shelfID, .color(hex))
+    }
+
+    @objc func pickAccentEmoji() {
+        // Toggling the character palette is the cheapest way to let the user
+        // pick an emoji without rolling a custom picker. The user copies the
+        // glyph; we read it back from the pasteboard via promptShelfName-style
+        // alert for now.
+        guard let emoji = Self.promptEmoji() else { return }
+        manager.setShelfAccent(id: shelfID, .emoji(emoji))
+    }
+
+    @objc func clearAccent() {
+        manager.setShelfAccent(id: shelfID, nil)
+    }
+
     // MARK: - Global actions
 
     @objc func getInfo() {
@@ -337,6 +368,35 @@ private final class ShelfActionTargets: NSObject {
         }
     }
 
+    static func promptShelfName(current: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Rename Shelf"
+        alert.informativeText = "Leave blank to clear the custom name."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = current
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return field.stringValue
+    }
+
+    static func promptEmoji() -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Set Accent Emoji"
+        alert.informativeText = "Type or paste a single emoji."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Set")
+        alert.addButton(withTitle: "Cancel")
+        // Open the system character palette so the user can pick one.
+        NSApp.orderFrontCharacterPalette(nil)
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return nil }
+        return String(first)
+    }
+
     static func promptBatchRename(defaultPattern: String = "File #") -> String? {
         let alert = NSAlert()
         alert.messageText = "Batch Rename"
@@ -447,6 +507,11 @@ enum ShelfActionMenuBuilder {
         allActions.submenu = makeAllActionsMenu(targets: targets, hasFiles: hasFiles)
         menu.addItem(allActions)
 
+        let identity = NSMenuItem(title: "Shelf", action: nil, keyEquivalent: "")
+        identity.image = symbol("tag")
+        identity.submenu = makeIdentityMenu(manager: manager, shelfID: shelfID, targets: targets)
+        menu.addItem(identity)
+
         menu.addItem(makeItem(
             title: "Clear Shelf",
             symbol: "xmark.bin",
@@ -456,6 +521,111 @@ enum ShelfActionMenuBuilder {
         ))
 
         return menu
+    }
+
+    private static func makeIdentityMenu(
+        manager: ShelfManager,
+        shelfID: UUID,
+        targets: ShelfActionTargets
+    ) -> NSMenu {
+        let menu = NSMenu()
+        let shelf = manager.shelf(id: shelfID)
+        let isPinned = shelf?.pinned ?? false
+        let currentAccent = shelf?.accent
+
+        let renameTitle = (shelf?.name?.isEmpty == false) ? "Rename Shelf…" : "Name Shelf…"
+        menu.addItem(makeItem(
+            title: renameTitle,
+            symbol: "character.cursor.ibeam",
+            action: #selector(ShelfActionTargets.renameShelf),
+            target: targets,
+            enabled: true
+        ))
+
+        let pin = makeItem(
+            title: isPinned ? "Unpin Shelf" : "Pin Shelf",
+            symbol: isPinned ? "pin.slash" : "pin",
+            action: #selector(ShelfActionTargets.togglePinned),
+            target: targets,
+            enabled: true
+        )
+        if isPinned { pin.state = .on }
+        menu.addItem(pin)
+
+        menu.addItem(.separator())
+
+        let accentLabel = NSMenuItem(title: "Accent", action: nil, keyEquivalent: "")
+        accentLabel.image = symbol("paintpalette")
+        accentLabel.submenu = makeAccentMenu(currentAccent: currentAccent, targets: targets)
+        menu.addItem(accentLabel)
+
+        return menu
+    }
+
+    private static func makeAccentMenu(
+        currentAccent: ShelfAccent?,
+        targets: ShelfActionTargets
+    ) -> NSMenu {
+        let menu = NSMenu()
+
+        let none = NSMenuItem(
+            title: "None",
+            action: #selector(ShelfActionTargets.clearAccent),
+            keyEquivalent: ""
+        )
+        none.target = targets
+        if currentAccent == nil { none.state = .on }
+        menu.addItem(none)
+
+        menu.addItem(.separator())
+
+        let palette: [(String, String)] = [
+            ("Red",    "#FF453A"),
+            ("Orange", "#FF9F0A"),
+            ("Yellow", "#FFD60A"),
+            ("Green",  "#30D158"),
+            ("Blue",   "#0A84FF"),
+            ("Purple", "#BF5AF2"),
+        ]
+        for (label, hex) in palette {
+            let mi = NSMenuItem(
+                title: label,
+                action: #selector(ShelfActionTargets.setAccentColor(_:)),
+                keyEquivalent: ""
+            )
+            mi.target = targets
+            mi.representedObject = hex
+            mi.image = colorSwatch(hex: hex)
+            if case .color(let active) = currentAccent, active == hex { mi.state = .on }
+            menu.addItem(mi)
+        }
+
+        menu.addItem(.separator())
+
+        let emoji = NSMenuItem(
+            title: "Pick Emoji…",
+            action: #selector(ShelfActionTargets.pickAccentEmoji),
+            keyEquivalent: ""
+        )
+        emoji.target = targets
+        if case .emoji = currentAccent { emoji.state = .on }
+        menu.addItem(emoji)
+
+        return menu
+    }
+
+    private static func colorSwatch(hex: String) -> NSImage {
+        let size = NSSize(width: 14, height: 14)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let path = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
+            (NSColor(hex: hex) ?? .systemGray).setFill()
+            path.fill()
+            NSColor.black.withAlphaComponent(0.15).setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+            return true
+        }
+        return image
     }
 
     private static func makeAllActionsMenu(
@@ -583,5 +753,17 @@ enum ShelfActionMenuBuilder {
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         icon.size = NSSize(width: 16, height: 16)
         return icon
+    }
+}
+
+extension NSColor {
+    convenience init?(hex: String) {
+        var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let value = UInt32(s, radix: 16) else { return nil }
+        let r = CGFloat((value >> 16) & 0xFF) / 255
+        let g = CGFloat((value >> 8) & 0xFF) / 255
+        let b = CGFloat(value & 0xFF) / 255
+        self.init(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 }

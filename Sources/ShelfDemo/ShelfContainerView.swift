@@ -403,8 +403,23 @@ private struct ExpandedShelfView: View {
         [GridItem(.adaptive(minimum: 96, maximum: 116), spacing: 16, alignment: .top)]
     }
 
-    private var title: String {
+    private var shelf: Shelf? { manager.shelf(id: shelfID) }
+
+    private var countTitle: String {
         items.count == 1 ? "1 File" : "\(items.count) Files"
+    }
+
+    private var headerPrimary: String {
+        if let n = shelf?.name, !n.isEmpty { return n }
+        return countTitle
+    }
+
+    private var headerSubtitle: String {
+        let size = manager.displayTotalSize(of: shelfID)
+        if shelf?.name?.isEmpty == false {
+            return size == "—" ? countTitle : "\(countTitle) · \(size)"
+        }
+        return size
     }
 
     var body: some View {
@@ -426,12 +441,22 @@ private struct ExpandedShelfView: View {
         HStack(alignment: .center, spacing: 10) {
             CircularIconButton(systemName: "chevron.left", action: onCollapse)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.white)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(manager.displayTotalSize(of: shelfID))
+                HStack(spacing: 6) {
+                    if let accent = shelf?.accent {
+                        ShelfAccentBadge(accent: accent, size: 10)
+                    }
+                    Text(headerPrimary)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if shelf?.pinned == true {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.7))
+                    }
+                }
+                Text(headerSubtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(Color.white.opacity(0.55))
             }
@@ -952,6 +977,27 @@ private struct DropTargetOverlay: View {
             .strokeBorder(Color.accentColor.opacity(active ? 1 : 0), lineWidth: 3)
             .animation(.easeOut(duration: 0.15), value: active)
             .allowsHitTesting(false)
+    }
+}
+
+struct ShelfAccentBadge: View {
+    let accent: ShelfAccent
+    var size: CGFloat = 10
+
+    var body: some View {
+        switch accent {
+        case .color(let hex):
+            Circle()
+                .fill(Color(nsColor: NSColor(hex: hex) ?? .systemGray))
+                .frame(width: size, height: size)
+                .overlay(
+                    Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+                )
+        case .emoji(let glyph):
+            Text(glyph)
+                .font(.system(size: size + 2))
+                .frame(width: size + 4, height: size + 4)
+        }
     }
 }
 

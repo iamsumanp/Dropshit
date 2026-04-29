@@ -19,10 +19,11 @@ struct CollapsedShelfView: View {
 
     @State private var stackHovering = false
 
+    private var shelf: Shelf? { manager.shelf(id: shelfID) }
+
     private var pillTitle: String {
-        if items.count == 1 {
-            return items[0].displayName
-        }
+        if let n = shelf?.name, !n.isEmpty { return n }
+        if items.count == 1 { return items[0].displayName }
         return "\(items.count) Files"
     }
 
@@ -62,6 +63,16 @@ struct CollapsedShelfView: View {
                     HStack(spacing: 6) {
                         CircularIconButton(systemName: "xmark", action: onClose)
                         Spacer()
+                        if let accent = shelf?.accent {
+                            ShelfAccentBadge(accent: accent, size: 10)
+                                .padding(.trailing, 2)
+                        }
+                        if shelf?.pinned == true {
+                            Image(systemName: "pin.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.white.opacity(0.75))
+                                .padding(.trailing, 2)
+                        }
                         ShelfActionMenu(manager: manager, shelfID: shelfID)
                     }
 

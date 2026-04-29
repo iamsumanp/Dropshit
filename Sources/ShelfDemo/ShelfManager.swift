@@ -110,6 +110,27 @@ final class ShelfManager: ObservableObject {
         shelves.removeAll { $0.id == id }
     }
 
+    /// Sets a custom display name for a shelf. Pass nil/empty to clear.
+    func renameShelf(id: UUID, to name: String?) {
+        guard let i = index(of: id) else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newName = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        guard shelves[i].name != newName else { return }
+        shelves[i].name = newName
+    }
+
+    func setShelfPinned(id: UUID, _ pinned: Bool) {
+        guard let i = index(of: id) else { return }
+        guard shelves[i].pinned != pinned else { return }
+        shelves[i].pinned = pinned
+    }
+
+    func setShelfAccent(id: UUID, _ accent: ShelfAccent?) {
+        guard let i = index(of: id) else { return }
+        guard shelves[i].accent != accent else { return }
+        shelves[i].accent = accent
+    }
+
     /// Removes shelves whose last activity (most recent item add, falling back
     /// to shelf createdAt) is older than `days`. For each removed shelf, files
     /// that the shelf owns (i.e. live under our temporary directory) are also
@@ -125,6 +146,8 @@ final class ShelfManager: ObservableObject {
             .standardizedFileURL.path
 
         let expired = shelves.filter { shelf in
+            // Pinned shelves are exempt from auto-expiry regardless of age.
+            guard !shelf.pinned else { return false }
             let last = shelf.items.map(\.createdAt).max() ?? shelf.createdAt
             return last < cutoff
         }

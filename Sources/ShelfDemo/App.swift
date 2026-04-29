@@ -279,16 +279,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func buildRecentShelvesMenu() -> NSMenu {
         let submenu = NSMenu()
-        let shelves = manager.shelves.reversed()
 
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         formatter.doesRelativeDateFormatting = true
 
+        // Pinned shelves float to the top; remaining shelves stay in
+        // most-recent-first order (the tail of the array is newest).
+        let nonEmpty = manager.shelves.filter { !$0.items.isEmpty }
+        let pinned = nonEmpty.filter { $0.pinned }.reversed()
+        let rest = nonEmpty.filter { !$0.pinned }.reversed()
+        let ordered = Array(pinned) + Array(rest)
+
         var shown = 0
-        for shelf in shelves {
-            guard !shelf.items.isEmpty else { continue }
+        for shelf in ordered {
             shown += 1
             let item = NSMenuItem(
                 title: "",
@@ -298,12 +303,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             item.representedObject = shelf.id
 
-            let title = shelf.items.count == 1
-                ? shelf.items[0].displayName
-                : "\(shelf.items.count) Files"
-            let subtitle = formatter.string(from: shelf.createdAt)
+            let title: String
+            if let n = shelf.name, !n.isEmpty {
+                title = n
+            } else if shelf.items.count == 1 {
+                title = shelf.items[0].displayName
+            } else {
+                title = "\(shelf.items.count) Files"
+            }
+            var subtitle = formatter.string(from: shelf.createdAt)
+            if shelf.name?.isEmpty == false {
+                let count = shelf.items.count == 1 ? "1 file" : "\(shelf.items.count) files"
+                subtitle = "\(count) · \(subtitle)"
+            }
 
             let attr = NSMutableAttributedString()
+            if shelf.pinned {
+                let pin = NSTextAttachment()
+                pin.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+                attr.append(NSAttributedString(attachment: pin))
+                attr.append(NSAttributedString(string: " "))
+            }
             attr.append(NSAttributedString(string: title + "\n", attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .medium),
                 .foregroundColor: NSColor.labelColor,
@@ -314,7 +335,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ]))
             item.attributedTitle = attr
 
-            if let first = shelf.items.first, let url = first.fileURL {
+            if let accentImage = recentMenuIcon(for: shelf) {
+                item.image = accentImage
+            } else if let first = shelf.items.first, let url = first.fileURL {
                 let icon = NSWorkspace.shared.icon(forFile: url.path)
                 icon.size = NSSize(width: 28, height: 28)
                 item.image = icon
@@ -338,6 +361,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         return submenu
+    }
+
+    /// When the shelf has an accent (color or emoji), render a 28×28 swatch
+    /// for the menu item icon so the accent dominates the visual identity.
+    /// Returns nil when no accent is set, letting the caller fall back to
+    /// the file icon.
+    private func recentMenuIcon(for shelf: Shelf) -> NSImage? {
+        guard let accent = shelf.accent else { return nil }
+        let size = NSSize(width: 28, height: 28)
+        switch accent {
+        case .color(let hex):
+            return NSImage(size: size, flipped: false) { rect in
+                let path = NSBezierPath(ovalIn: rect.insetBy(dx: 4, dy: 4))
+                (NSColor(hex: hex) ?? .systemGray).setFill()
+                path.fill()
+                NSColor.black.withAlphaComponent(0.15).setStroke()
+                path.lineWidth = 0.5
+                path.stroke()
+                return true
+            }
+        case .emoji(let glyph):
+            return NSImage(size: size, flipped: false) { rect in
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 18)
+                ]
+                let s = (glyph as NSString)
+                let measured = s.size(withAttributes: attrs)
+                let origin = NSPoint(
+                    x: rect.midX - measured.width / 2,
+                    y: rect.midY - measured.height / 2
+                )
+                s.draw(at: origin, withAttributes: attrs)
+                return true
+            }
+        }
     }
 
     @objc private func newShelfAction() {

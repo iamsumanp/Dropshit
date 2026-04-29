@@ -13,6 +13,10 @@ private struct PersistedShelf: Codable {
     let id: UUID
     let createdAt: Date
     let items: [PersistedShelfItem]
+    // Added in v3 — optional so v2 payloads decode cleanly.
+    let name: String?
+    let pinned: Bool?
+    let accent: ShelfAccent?
 }
 
 private struct PersistedStore: Codable {
@@ -47,11 +51,14 @@ final class ShelfStore {
             PersistedShelf(
                 id: shelf.id,
                 createdAt: shelf.createdAt,
-                items: shelf.items.map(persist)
+                items: shelf.items.map(persist),
+                name: shelf.name,
+                pinned: shelf.pinned ? true : nil,
+                accent: shelf.accent
             )
         }
         let payload = PersistedStore(
-            version: 2,
+            version: 3,
             shelves: records,
             currentShelfID: currentShelfID
         )
@@ -138,7 +145,10 @@ final class ShelfStore {
             resolvedShelves.append(Shelf(
                 id: shelfRecord.id,
                 items: items,
-                createdAt: shelfRecord.createdAt
+                createdAt: shelfRecord.createdAt,
+                name: shelfRecord.name,
+                pinned: shelfRecord.pinned ?? false,
+                accent: shelfRecord.accent
             ))
         }
 
