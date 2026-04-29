@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import QuickLookThumbnailing
+import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
@@ -174,7 +175,11 @@ final class ShelfManager: ObservableObject {
 
     func addItem(_ item: ShelfItem, to shelfID: UUID) {
         guard let idx = index(of: shelfID) else { return }
-        shelves[idx].items.append(item)
+        // Animate the insertion so dropped tiles slide/fade in instead of
+        // popping (and so any layout reflow in the grid is smoothed too).
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            shelves[idx].items.append(item)
+        }
     }
 
     func removeItem(id itemID: UUID, from shelfID: UUID) {
@@ -360,7 +365,7 @@ final class ShelfManager: ObservableObject {
         for (sIdx, shelf) in shelves.enumerated() {
             if let iIdx = shelf.items.firstIndex(where: { $0.id == id }) {
                 let old = shelves[sIdx].items[iIdx]
-                shelves[sIdx].items[iIdx] = ShelfItem(
+                let new = ShelfItem(
                     id: old.id,
                     type: old.type,
                     fileURL: old.fileURL,
@@ -371,6 +376,11 @@ final class ShelfManager: ObservableObject {
                     pixelSize: old.pixelSize,
                     pageCount: old.pageCount
                 )
+                // Crossfade the skeleton/icon → real preview swap so it
+                // doesn't read as a hard pop.
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    shelves[sIdx].items[iIdx] = new
+                }
                 return
             }
         }

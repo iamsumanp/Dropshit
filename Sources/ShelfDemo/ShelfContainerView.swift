@@ -589,8 +589,20 @@ private struct ExpandedShelfView: View {
     }
 
     private var revealButton: some View {
-        HStack {
+        let allSelected = !items.isEmpty && selection.count == items.count
+        return HStack(spacing: 8) {
             Spacer()
+            SelectAllButton(
+                allSelected: allSelected,
+                enabled: !items.isEmpty,
+                action: {
+                    if allSelected {
+                        selection.removeAll()
+                    } else {
+                        selection = Set(items.map(\.id))
+                    }
+                }
+            )
             RevealInFinderButton(enabled: !items.isEmpty, action: revealInFinder)
             Spacer()
         }
@@ -600,6 +612,46 @@ private struct ExpandedShelfView: View {
         let urls = items.compactMap { $0.fileURL }
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+}
+
+/// Pill that toggles selection across every item in the shelf. Once items
+/// are selected, dragging any tile drags the whole selection (existing
+/// behavior in DocumentGridItem / DocumentListItem).
+private struct SelectAllButton: View {
+    let allSelected: Bool
+    let enabled: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: allSelected
+                      ? "checkmark.circle.fill"
+                      : "circle.dashed")
+                    .font(.system(size: 11, weight: .medium))
+                Text(allSelected ? "Deselect All" : "Select All")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(Color.white.opacity(enabled ? 0.92 : 0.4))
+            .padding(.horizontal, 14)
+            .frame(height: 32)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(hovering && enabled ? 0.16 : 0.09))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+            )
+            .scaleEffect(hovering && enabled ? 1.03 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
@@ -622,11 +674,20 @@ private struct DocumentGridItem: View {
     private static let labelMinWidth: CGFloat = 90
 
     private var cardSize: CGSize {
-        guard item.type == .image,
-              let thumb = item.thumbnail,
-              let aspect = Self.aspectRatio(of: thumb),
-              aspect.isFinite, aspect > 0
-        else { return Self.defaultCardSize }
+        guard item.type == .image else { return Self.defaultCardSize }
+        // Prefer the file's own pixel dimensions — set synchronously in
+        // ShelfManager.addFile — so the card lands at the right aspect on
+        // the very first render. The thumbnail-derived aspect was wrong
+        // until QL replaced the placeholder icon, causing a visible
+        // resize/jitter mid-drop.
+        let aspectFromMeta: CGFloat? = {
+            guard let s = item.pixelSize, s.width > 0, s.height > 0 else { return nil }
+            return s.width / s.height
+        }()
+        let aspect = aspectFromMeta
+            ?? item.thumbnail.flatMap(Self.aspectRatio(of:))
+            ?? 1
+        guard aspect.isFinite, aspect > 0 else { return Self.defaultCardSize }
         if aspect >= 1 {
             return CGSize(width: Self.cardLongSide, height: Self.cardLongSide / aspect)
         } else {
@@ -705,7 +766,21 @@ private struct DocumentGridItem: View {
 
     @ViewBuilder
     private func cardFace(size: CGSize) -> some View {
-        if renderFlush, let thumb = item.thumbnail {
+        if item.type == .image, item.thumbnailIsIcon {
+            // Real photo preview is still being rendered by QL. Showing the
+            // generic JPEG/HEIC type icon stretched into the photo's frame
+            // looks like a flash of a different image, so render a quiet
+            // skeleton instead and crossfade to the real thumbnail when it
+            // arrives.
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .frame(width: size.width, height: size.height)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                )
+                .transition(.opacity)
+        } else if renderFlush, let thumb = item.thumbnail {
             if item.type == .image {
                 Image(nsImage: thumb)
                     .resizable()
@@ -713,6 +788,7 @@ private struct DocumentGridItem: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: size.width, height: size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .transition(.opacity)
             } else {
                 Image(nsImage: thumb)
                     .resizable()

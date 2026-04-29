@@ -148,11 +148,20 @@ private struct StackedDocumentPreview: View {
     /// Card footprint that honors the image's true aspect ratio so a landscape
     /// photo isn't cropped into a portrait box (and vice versa). The longer
     /// side is capped at `longSide` to keep the stack visually balanced.
-    private static func cardSize(for image: NSImage) -> CGSize {
+    /// Prefers `item.pixelSize` (set synchronously from file metadata) over
+    /// the thumbnail's pixel dimensions — otherwise the card resizes when QL
+    /// replaces the placeholder icon, which reads as a jitter on drop.
+    private static func cardSize(for item: ShelfItem) -> CGSize {
         let portraitFallback = CGSize(width: 92, height: 118)
-        guard let aspect = aspectRatio(of: image), aspect.isFinite, aspect > 0
-        else { return portraitFallback }
         let longSide: CGFloat = 122
+        let aspect: CGFloat? = {
+            if let s = item.pixelSize, s.width > 0, s.height > 0 {
+                return s.width / s.height
+            }
+            return item.thumbnail.flatMap(aspectRatio(of:))
+        }()
+        guard let aspect, aspect.isFinite, aspect > 0
+        else { return portraitFallback }
         if aspect >= 1 {
             return CGSize(width: longSide, height: longSide / aspect)
         } else {
@@ -176,22 +185,36 @@ private struct StackedDocumentPreview: View {
 
     @ViewBuilder
     private func cardView(for item: ShelfItem, isFront: Bool) -> some View {
-        if item.type == .image, let thumb = item.thumbnail {
-            let size = Self.cardSize(for: thumb)
-            Image(nsImage: thumb)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fill)
-                .frame(width: size.width, height: size.height)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
+        if item.type == .image {
+            let size = Self.cardSize(for: item)
+            Group {
+                if item.thumbnailIsIcon {
+                    // QL preview pending — show a quiet skeleton sized at
+                    // the photo's real aspect, not the JPEG-icon's aspect.
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(isFront ? 0.28 : 0.18),
-                        radius: isFront ? 14 : 8,
-                        x: 0, y: isFront ? 6 : 3)
-                .modifier(FrontMatchedGeometry(active: isFront, namespace: namespace))
+                        .fill(Color.white.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                        )
+                } else if let thumb = item.thumbnail {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fill)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                        )
+                        .transition(.opacity)
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .shadow(color: .black.opacity(isFront ? 0.28 : 0.18),
+                    radius: isFront ? 14 : 8,
+                    x: 0, y: isFront ? 6 : 3)
+            .modifier(FrontMatchedGeometry(active: isFront, namespace: namespace))
         } else if item.thumbnailIsIcon, let thumb = item.thumbnail {
             Image(nsImage: thumb)
                 .resizable()
