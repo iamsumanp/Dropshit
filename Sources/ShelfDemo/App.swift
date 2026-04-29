@@ -372,7 +372,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Shake
 
     private func handleShake() {
-        // Every shake creates its own empty shelf + panel near the cursor.
+        // Ignore further shakes while a shake-created shelf is still pending.
+        // Otherwise rapid shakes pile up panels and only the latest one's
+        // release watcher survives, leaving earlier empties on screen.
+        if let pending = pendingShelfID,
+           let panel = panels[pending], panel.isVisible {
+            return
+        }
         let shelfID = manager.createShelf()
         ephemeralShelfIDs.insert(shelfID)
         pendingShelfID = shelfID
