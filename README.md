@@ -23,6 +23,11 @@ Dropover is a great paid app. Dropshit is the same idea, written from scratch as
 - Drag preview matches the rendered card (image thumbnail, text preview, or doc card) instead of a generic file icon.
 - Aspect-ratio-aware cards: a landscape photo shows wide-and-short, a portrait shows tall-and-narrow — both uncropped.
 - File metadata in-line: dimensions for images (RAW/CR2/HEIC included), page count for PDFs, size for everything.
+- **Pasted text snippets** are real openable files: double-click opens in TextEdit, Show in Finder reveals them.
+- **AppKit-level drop target** — no green "+" copy badge on the cursor while dragging onto a shelf.
+- **Newest-first** ordering in the expanded grid/list so the just-dropped tile is right where you're looking.
+- **Rename…** in the right-click menu on any file row (Finder-style: stem pre-selected, extension preserved).
+- **Cmd-Z undo** for Clear Shelf and Move to Trash. Trash undo restores the file from the system Trash to its original location.
 - Quick Look on space, batch rename, ZIP archive, Move to Trash, Show in Finder, AirDrop, Messages, Open With…
 - Auto-pruning of items whose backing files were trashed from Finder while you weren't looking.
 - Menubar status icon flips between resting (`[ ·]`) and "ready to receive" while a drop is in flight.
@@ -32,23 +37,28 @@ Dropover is a great paid app. Dropshit is the same idea, written from scratch as
 
 ### Pre-built DMG
 
-1. Download `Dropshit.dmg` from the latest release (or build it yourself, see below).
-2. Mount the DMG, drag `Dropshit.app` to `/Applications`.
-3. First launch on a new machine (the DMG is ad-hoc signed, not notarized):
+Latest release: <https://github.com/iamsumanp/Dropshit/releases/latest>
 
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Dropshit.app
-   ```
+One-liner install:
 
-4. Launch — Dropshit lives in your menubar. Click the icon to see options; shake any Finder drag to summon a shelf.
+```sh
+curl -L -o ~/Downloads/Dropshit.dmg \
+  https://github.com/iamsumanp/Dropshit/releases/latest/download/Dropshit.dmg
+open ~/Downloads/Dropshit.dmg
+# Drag Dropshit.app to /Applications, eject the DMG, then:
+xattr -dr com.apple.quarantine /Applications/Dropshit.app
+open /Applications/Dropshit.app
+```
+
+The `xattr` step is one-time per machine — the DMG is ad-hoc signed (no Apple Developer ID / notarization), so Gatekeeper marks it quarantined on first download. After that, Dropshit lives in your menubar; click the icon to see options, or shake any Finder drag to summon a shelf.
 
 ### Build from source
 
 Requires macOS 13+ and the Swift toolchain that ships with Xcode 15+ (Swift 5.9).
 
 ```sh
-git clone https://github.com/<your-username>/dropshit.git
-cd dropshit
+git clone https://github.com/iamsumanp/Dropshit.git
+cd Dropshit
 
 # Run for development:
 swift run ShelfDemo
@@ -56,6 +66,14 @@ swift run ShelfDemo
 # Build a signed .app and .dmg for distribution:
 bash scripts/build-dmg.sh
 # → produces dist/Dropshit.app and Dropshit.dmg in the repo root
+```
+
+Cutting a new release after a build:
+
+```sh
+gh release create v1.1 Dropshit.dmg \
+  --title "Dropshit v1.1" \
+  --notes "What changed in this release…"
 ```
 
 `scripts/build-dmg.sh` regenerates the app icon (`scripts/make-icon.swift`), builds in release mode, ad-hoc signs, and packages a DMG with an `/Applications` symlink for drag-install.
