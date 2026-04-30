@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import ImageIO
 import Quartz
@@ -54,12 +55,48 @@ struct ShelfItem: Identifiable, Equatable {
     }
 
     var displayName: String {
+        // Text snippets prefer the snippet preview as the visible label, even
+        // when they're backed by a temp file (so Open / Reveal-in-Finder can
+        // route through the standard file path). Falling back to the temp
+        // filename would surface gibberish like "Snippet-1a2b3c4d.txt".
+        if type == .text, let text = textContent {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Untitled Text" : String(trimmed.prefix(40))
+        }
         if let url = fileURL { return url.lastPathComponent }
         if let text = textContent {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? "Untitled Text" : String(trimmed.prefix(40))
         }
         return "Untitled"
+    }
+
+    /// Writes a pasted/dropped text snippet to a deterministic `.txt` file in
+    /// the system temp dir so the snippet has a real backing fileURL. That URL
+    /// is what makes "Open" (TextEdit) and "Reveal in Finder" work for text
+    /// items — both go through `NSWorkspace` APIs that need a file path. The
+    /// content hash makes the path stable across re-pastes of the same text.
+    static func writeTextToTemp(_ text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstLine = trimmed.components(separatedBy: .newlines).first ?? ""
+        let stem = String(firstLine.prefix(40))
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        let safeStem = stem.isEmpty ? "Snippet" : stem
+        let hash = SHA256.hash(data: Data(text.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined().prefix(8)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(safeStem)-\(hash).txt")
+        do {
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            }
+            return url
+        } catch {
+            NSLog("Shelf: failed to write text snippet to temp: \(error)")
+            return nil
+        }
     }
 
     var byteSize: Int64? {

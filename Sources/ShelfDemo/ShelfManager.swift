@@ -66,6 +66,10 @@ final class ShelfManager: ObservableObject {
 
         for shelf in shelves {
             for item in shelf.items {
+                // Text snippets render their preview from `textContent`; a QL
+                // thumbnail would just be the system .txt icon and would replace
+                // the snippet preview, so skip them.
+                if item.type == .text { continue }
                 if let url = item.fileURL {
                     if item.isDirectory {
                         recomputeFolderSize(itemID: item.id, in: shelf.id)
@@ -204,7 +208,74 @@ final class ShelfManager: ObservableObject {
 
     func clear(shelfID: UUID) {
         guard let idx = index(of: shelfID) else { return }
+        let removed = shelves[idx].items
         shelves[idx].items.removeAll()
+        if !removed.isEmpty {
+            undoSnapshot = .clearShelf(shelfID: shelfID, items: removed)
+        }
+    }
+
+    // MARK: - Undo
+
+    enum UndoableAction {
+        case clearShelf(shelfID: UUID, items: [ShelfItem])
+        /// `trashedURLs` is the original→trashed map returned by
+        /// `NSWorkspace.shared.recycle`; empty when the item was a text
+        /// snippet or a row removal that didn't touch the filesystem.
+        case moveToTrash(
+            shelfID: UUID,
+            items: [ShelfItem],
+            trashedURLs: [URL: URL]
+        )
+
+        var menuTitle: String {
+            switch self {
+            case .clearShelf: return "Undo Clear Shelf"
+            case .moveToTrash(_, let items, _):
+                return items.count <= 1
+                    ? "Undo Move to Trash"
+                    : "Undo Move to Trash (\(items.count))"
+            }
+        }
+    }
+
+    @Published private(set) var undoSnapshot: UndoableAction?
+
+    var canUndo: Bool { undoSnapshot != nil }
+
+    func captureTrashUndo(items: [ShelfItem], trashedURLs: [URL: URL], in shelfID: UUID) {
+        guard !items.isEmpty else { return }
+        undoSnapshot = .moveToTrash(shelfID: shelfID, items: items, trashedURLs: trashedURLs)
+    }
+
+    func performUndo() {
+        guard let snapshot = undoSnapshot else { return }
+        undoSnapshot = nil
+        switch snapshot {
+        case .clearShelf(let shelfID, let items):
+            guard let idx = index(of: shelfID) else { return }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                shelves[idx].items.append(contentsOf: items)
+            }
+        case .moveToTrash(let shelfID, let items, let trashedURLs):
+            // Move trashed files back to their original location before
+            // re-adding the rows; an item whose backing file failed to
+            // restore is dropped silently rather than left as a broken row.
+            let fm = FileManager.default
+            for (originalURL, trashedURL) in trashedURLs {
+                guard fm.fileExists(atPath: trashedURL.path) else { continue }
+                if fm.fileExists(atPath: originalURL.path) { continue }
+                try? fm.moveItem(at: trashedURL, to: originalURL)
+            }
+            guard let idx = index(of: shelfID) else { return }
+            let restored = items.filter { item in
+                guard let url = item.fileURL else { return true }
+                return fm.fileExists(atPath: url.path)
+            }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                shelves[idx].items.append(contentsOf: restored)
+            }
+        }
     }
 
     /// Drops items whose backing file is gone (e.g. moved to Trash from
@@ -387,7 +458,11 @@ final class ShelfManager: ObservableObject {
     @discardableResult
     func addText(_ text: String, to shelfID: UUID) -> ShelfItem? {
         guard index(of: shelfID) != nil else { return nil }
-        let item = ShelfItem(type: .text, textContent: text)
+        // Stage a backing temp .txt so Open / Reveal-in-Finder work. The
+        // snippet preview still renders from `textContent`; the fileURL is
+        // there purely to make the standard file actions reachable.
+        let url = ShelfItem.writeTextToTemp(text)
+        let item = ShelfItem(type: .text, fileURL: url, textContent: text)
         addItem(item, to: shelfID)
         return item
     }

@@ -33,31 +33,6 @@ final class ShareCoordinator: NSObject, NSSharingServicePickerDelegate {
 
     nonisolated func sharingServicePicker(
         _ sharingServicePicker: NSSharingServicePicker,
-        sharingServicesForItems items: [Any],
-        proposedSharingServices proposedServices: [NSSharingService]
-    ) -> [NSSharingService] {
-        var services = proposedServices
-
-        let icon = NSImage(systemSymbolName: "link", accessibilityDescription: "Share link")
-            ?? NSImage()
-        let copyLink = NSSharingService(
-            title: "Copy Shareable Link",
-            image: icon,
-            alternateImage: nil,
-            handler: {
-                let token = UUID().uuidString.prefix(10).lowercased()
-                let link = "https://shelf.local/s/\(token)"
-                let pb = NSPasteboard.general
-                pb.clearContents()
-                pb.writeObjects([link as NSString])
-            }
-        )
-        services.insert(copyLink, at: 0)
-        return services
-    }
-
-    nonisolated func sharingServicePicker(
-        _ sharingServicePicker: NSSharingServicePicker,
         didChoose service: NSSharingService?
     ) {
         Task { @MainActor in

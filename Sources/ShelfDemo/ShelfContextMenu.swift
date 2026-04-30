@@ -56,16 +56,82 @@ final class ShelfItemActions: NSObject {
 
     @objc func moveToTrash() {
         guard let url = item.fileURL else {
+            // Text snippet (or any item missing a file) — just drop the row;
+            // record an undo snapshot so Cmd-Z can restore it without needing
+            // to round-trip through the Trash.
+            manager?.captureTrashUndo(items: [item], trashedURLs: [:], in: shelfID)
             manager?.removeItem(id: item.id, from: shelfID)
             return
         }
         let itemID = item.id
         let shelfRef = shelfID
-        NSWorkspace.shared.recycle([url]) { [weak self] _, _ in
+        let snapshotItem = item
+        NSWorkspace.shared.recycle([url]) { [weak self] trashed, _ in
             Task { @MainActor in
+                self?.manager?.captureTrashUndo(
+                    items: [snapshotItem],
+                    trashedURLs: trashed,
+                    in: shelfRef
+                )
                 self?.manager?.removeItem(id: itemID, from: shelfRef)
             }
         }
+    }
+
+    @objc func rename() {
+        guard let url = item.fileURL,
+              FileManager.default.fileExists(atPath: url.path),
+              let manager else { return }
+        let current = url.lastPathComponent
+        guard let newName = Self.promptRename(current: current),
+              newName != current else { return }
+        let newURL = url.deletingLastPathComponent().appendingPathComponent(newName)
+        do {
+            try manager.renameItem(id: item.id, to: newURL, in: shelfID)
+        } catch {
+            Self.showRenameError(error)
+        }
+    }
+
+    @MainActor
+    private static func promptRename(current: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Rename"
+        alert.informativeText = "Enter the new file name (extension included)."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 22))
+        field.stringValue = current
+        // Pre-select the basename (stem) so typing replaces only the name and
+        // keeps the extension — matches Finder's rename behavior.
+        field.currentEditor()?.selectedRange = NSRange(location: 0, length: current.count)
+        alert.accessoryView = field
+        // Window must exist for makeFirstResponder; defer the focus request to
+        // the next runloop tick.
+        DispatchQueue.main.async {
+            alert.window.makeFirstResponder(field)
+            if let editor = field.currentEditor() {
+                let stem = (current as NSString).deletingPathExtension
+                editor.selectedRange = NSRange(location: 0, length: stem.count)
+            }
+        }
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return nil }
+        let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    @MainActor
+    private static func showRenameError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't rename"
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc func duplicateFile() {
@@ -77,7 +143,7 @@ final class ShelfItemActions: NSObject {
         var final = candidate
         var i = 2
         while FileManager.default.fileExists(atPath: final.path) {
-            var name = stem + " \(i)"
+            let name = stem + " \(i)"
             var u = url.deletingLastPathComponent().appendingPathComponent(name)
             if !ext.isEmpty { u.appendPathExtension(ext) }
             final = u
@@ -202,6 +268,20 @@ enum ShelfContextMenu {
         )
         share.target = actions
         menu.addItem(share)
+
+        menu.addItem(.separator())
+
+        // Rename — only for items with a real file path. Text snippets and
+        // missing files don't get a rename row.
+        let canRename = (item.fileURL != nil) && (item.type != .text)
+        let rename = NSMenuItem(
+            title: "Rename…",
+            action: #selector(ShelfItemActions.rename),
+            keyEquivalent: ""
+        )
+        rename.target = actions
+        rename.isEnabled = canRename
+        menu.addItem(rename)
 
         menu.addItem(.separator())
 

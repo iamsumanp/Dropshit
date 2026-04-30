@@ -1,8 +1,6 @@
 import CryptoKit
-import ImageIO
 import QuickLookThumbnailing
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
@@ -76,24 +74,15 @@ struct ShelfContainerView: View {
                 DropTargetOverlay(active: dropTargeted && !manager.isDragging)
             }
         }
-        // `UTType.item` is the root of the UTI hierarchy — registering it
-        // makes SwiftUI accept any drag. The other specific types stay in
-        // the list because SwiftUI restricts which identifiers we're
-        // allowed to call `loadItem(forTypeIdentifier:)` against to those
-        // listed here; without them, file/text/image loads silently
-        // return nothing.
-        .onDrop(
-            of: [
-                UTType.item,
-                UTType.fileURL,
-                UTType.url,
-                UTType.image,
-                UTType.plainText,
-                UTType.utf8PlainText,
-                UTType.data,
-            ],
-            isTargeted: $dropTargeted,
-            perform: handleDrop
+        // AppKit-level drop target — keeps the green "+" copy badge from
+        // showing up on the cursor (SwiftUI's `.onDrop` always negotiates as
+        // `.copy`, which paints the badge; we want a clean cursor instead).
+        .overlay(
+            ShelfDropTarget(
+                isTargeted: $dropTargeted,
+                allowDrop: { !manager.isDragging },
+                onDrop: handleDrop
+            )
         )
         .onReceive(manager.undockRequested) { id in
             guard id == shelfID, isDocked else { return }
@@ -129,212 +118,88 @@ struct ShelfContainerView: View {
         }
     }
 
-    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+    private func handleDrop(_ pasteboard: NSPasteboard) -> Bool {
         if manager.isDragging { return false }
-        var handled = false
-        let targetShelfID = shelfID
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-                handled = true
-                provider.loadItem(
-                    forTypeIdentifier: UTType.fileURL.identifier,
-                    options: nil
-                ) { item, _ in
-                    let url: URL? = {
-                        if let url = item as? URL { return url }
-                        if let data = item as? Data {
-                            return URL(dataRepresentation: data, relativeTo: nil)
-                        }
-                        if let str = item as? String {
-                            return URL(string: str)
-                        }
-                        return nil
-                    }()
-                    guard let url else { return }
-                    Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
-                }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.folder.identifier)
-                        || provider.hasItemConformingToTypeIdentifier(UTType.directory.identifier) {
-                // Finder folder drags surface only `public.folder` to SwiftUI's
-                // .onDrop (no `public.file-url`), so we have to load the folder
-                // by its directory UTI. `loadInPlaceFileRepresentation` returns
-                // the original on-disk URL without materializing a temp copy
-                // when isInPlace is true — essential for multi-GB folders that
-                // `loadFileRepresentation` would copy twice (system temp, then
-                // our managed temp).
-                handled = true
-                let folderUTI = provider.hasItemConformingToTypeIdentifier(UTType.folder.identifier)
-                    ? UTType.folder.identifier
-                    : UTType.directory.identifier
-                _ = provider.loadInPlaceFileRepresentation(forTypeIdentifier: folderUTI) { sourceURL, isInPlace, _ in
-                    guard let sourceURL else { return }
-                    if isInPlace {
-                        Task { @MainActor in manager.addFile(url: sourceURL, to: targetShelfID) }
+        let target = shelfID
+
+        // 1. File URLs — covers both files and folders. Finder always vends
+        // `.fileURL` for folders to AppKit destinations, so we don't need the
+        // separate `public.folder` branch the SwiftUI version had to carry.
+        if let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL], !urls.isEmpty {
+            for url in urls {
+                manager.addFile(url: url, to: target)
+            }
+            return true
+        }
+
+        // 2. File promises — sources like Mail, Photos, and some browsers
+        // vend the file lazily via NSFilePromiseReceiver. The receiver writes
+        // the real bytes into our temp dir, then we add it to the shelf.
+        if let receivers = pasteboard.readObjects(
+            forClasses: [NSFilePromiseReceiver.self], options: nil
+        ) as? [NSFilePromiseReceiver], !receivers.isEmpty {
+            let queue = OperationQueue()
+            queue.qualityOfService = .userInitiated
+            let dest = FileManager.default.temporaryDirectory
+            for receiver in receivers {
+                receiver.receivePromisedFiles(
+                    atDestination: dest,
+                    options: [:],
+                    operationQueue: queue
+                ) { url, error in
+                    if let error {
+                        NSLog("Shelf: file promise failed — \(error)")
                         return
                     }
-                    // Out-of-place fallback: system handed us a transient temp
-                    // URL it will delete after the callback returns. Copy into
-                    // our managed temp dir so the shelf entry stays valid.
-                    let dest = FileManager.default.temporaryDirectory
-                        .appendingPathComponent(sourceURL.lastPathComponent)
-                    try? FileManager.default.removeItem(at: dest)
-                    do {
-                        try FileManager.default.copyItem(at: sourceURL, to: dest)
-                        Task { @MainActor in manager.addFile(url: dest, to: targetShelfID) }
-                    } catch {
-                        NSLog("Shelf: failed to copy dropped folder: \(error)")
-                    }
+                    Task { @MainActor in manager.addFile(url: url, to: target) }
                 }
-            } else if let typeID = provider.registeredTypeIdentifiers.first(where: {
-                // A registered UTI with a preferred filename extension
-                // (e.g. `net.daringfireball.markdown` → "md", `public.swift-source`
-                // → "swift") signals that this is a real file drag — even
-                // when SwiftUI hasn't surfaced `public.file-url` and there's
-                // no `suggestedName`. Pull the bytes and stage as a temp
-                // file so the entry shows up as a proper file rather than
-                // being misclassified as a text snippet by the next branch.
-                UTType($0)?.preferredFilenameExtension != nil
-            }) {
-                handled = true
-                Self.stageFromProvider(
-                    provider: provider,
-                    typeID: typeID,
-                    targetShelfID: targetShelfID,
-                    manager: manager
-                )
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                handled = true
-                provider.loadDataRepresentation(
-                    forTypeIdentifier: UTType.image.identifier
-                ) { data, _ in
-                    guard let data else { return }
-                    let ext: String = {
-                        if let source = CGImageSourceCreateWithData(data as CFData, nil),
-                           let cfType = CGImageSourceGetType(source),
-                           let type = UTType(cfType as String),
-                           let ext = type.preferredFilenameExtension {
-                            return ext
-                        }
-                        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
-                        if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "jpg" }
-                        return "img"
-                    }()
-                    // Deterministic name from content hash so dropping the
-                    // same image twice lands at the same path and is caught
-                    // by the shelf's duplicate check.
-                    let digest = SHA256.hash(data: data)
-                    let hash = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
-                    let tmp = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("Shelf-\(hash).\(ext)")
-                    do {
-                        if !FileManager.default.fileExists(atPath: tmp.path) {
-                            try data.write(to: tmp)
-                        }
-                        Task { @MainActor in manager.addFile(url: tmp, to: targetShelfID) }
-                    } catch {
-                        NSLog("Shelf: failed to write dropped image: \(error)")
-                    }
-                }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier)
-                        || provider.hasItemConformingToTypeIdentifier(UTType.utf8PlainText.identifier) {
-                handled = true
-                let uti = provider.hasItemConformingToTypeIdentifier(UTType.utf8PlainText.identifier)
-                    ? UTType.utf8PlainText.identifier
-                    : UTType.plainText.identifier
-                provider.loadItem(forTypeIdentifier: uti, options: nil) { item, _ in
-                    let text: String? = {
-                        if let s = item as? String { return s }
-                        if let data = item as? Data { return String(data: data, encoding: .utf8) }
-                        return nil
-                    }()
-                    guard let text, !text.isEmpty else { return }
-                    Task { @MainActor in manager.addText(text, to: targetShelfID) }
-                }
-            } else if let typeID = provider.registeredTypeIdentifiers.first {
-                // Final catch-all: load whatever data we can and stage it.
-                handled = true
-                Self.stageFromProvider(
-                    provider: provider,
-                    typeID: typeID,
-                    targetShelfID: targetShelfID,
-                    manager: manager
-                )
             }
+            return true
         }
-        return handled
-    }
 
-    /// Tries to stage a dropped item by its file representation first so the
-    /// original filename survives (works for both real file URLs and file
-    /// promises), and only falls back to writing the raw data with a
-    /// synthesized name when the source has no file representation.
-    private static func stageFromProvider(
-        provider: NSItemProvider,
-        typeID: String,
-        targetShelfID: UUID,
-        manager: ShelfManager
-    ) {
-        _ = provider.loadFileRepresentation(forTypeIdentifier: typeID) { tempURL, _ in
-            if let tempURL {
-                let dest = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(tempURL.lastPathComponent)
-                try? FileManager.default.removeItem(at: dest)
+        // 3. Image data without a fileURL — e.g. dragging an image straight
+        // out of a webpage. Stage as PNG with a content-hash filename so a
+        // repeat drop hits the shelf's duplicate guard.
+        if let images = pasteboard.readObjects(
+            forClasses: [NSImage.self], options: nil
+        ) as? [NSImage], !images.isEmpty {
+            var staged = false
+            for image in images {
+                guard
+                    let tiff = image.tiffRepresentation,
+                    let bitmap = NSBitmapImageRep(data: tiff),
+                    let png = bitmap.representation(using: .png, properties: [:])
+                else { continue }
+                let hash = SHA256.hash(data: png)
+                    .map { String(format: "%02x", $0) }
+                    .joined().prefix(16)
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Shelf-\(hash).png")
                 do {
-                    try FileManager.default.copyItem(at: tempURL, to: dest)
-                    Task { @MainActor in manager.addFile(url: dest, to: targetShelfID) }
-                    return
+                    if !FileManager.default.fileExists(atPath: tmp.path) {
+                        try png.write(to: tmp)
+                    }
+                    manager.addFile(url: tmp, to: target)
+                    staged = true
                 } catch {
-                    NSLog("Shelf: failed to copy dropped file representation: \(error)")
+                    NSLog("Shelf: failed to write dropped image: \(error)")
                 }
             }
-            // No file representation — fall back to raw data with the
-            // suggested name (or "Dropped" if even that is missing).
-            let suggested = provider.suggestedName ?? "Dropped"
-            provider.loadDataRepresentation(forTypeIdentifier: typeID) { data, _ in
-                guard let data, !data.isEmpty else { return }
-                let url = stageTempFile(
-                    data: data,
-                    suggestedName: suggested,
-                    typeID: typeID
-                )
-                guard let url else { return }
-                Task { @MainActor in manager.addFile(url: url, to: targetShelfID) }
-            }
+            if staged { return true }
         }
-    }
 
-    /// Writes drag payload data to a temp file using the suggested filename
-    /// (extension preserved when present) so the shelf can display it as a
-    /// regular file entry. The hash suffix dedupes repeat drops of the same
-    /// content under the shelf's "already on shelf" check.
-    private static func stageTempFile(
-        data: Data,
-        suggestedName: String,
-        typeID: String
-    ) -> URL? {
-        let stem: String
-        let ext: String
-        if let dotRange = suggestedName.range(of: ".", options: .backwards) {
-            stem = String(suggestedName[..<dotRange.lowerBound])
-            ext = String(suggestedName[dotRange.upperBound...])
-        } else {
-            stem = suggestedName
-            ext = UTType(typeID)?.preferredFilenameExtension ?? "bin"
+        // 4. Plain text — pasted/dragged snippets. addText takes care of
+        // staging a backing temp .txt so Open / Reveal work.
+        if let text = pasteboard.string(forType: .string),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            manager.addText(text, to: target)
+            return true
         }
-        let digest = SHA256.hash(data: data)
-        let hash = digest.map { String(format: "%02x", $0) }.joined().prefix(8)
-        let safeStem = stem.isEmpty ? "Dropped" : stem
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(safeStem)-\(hash).\(ext)")
-        do {
-            if !FileManager.default.fileExists(atPath: tmp.path) {
-                try data.write(to: tmp)
-            }
-            return tmp
-        } catch {
-            NSLog("Shelf: failed to stage dropped data: \(error)")
-            return nil
-        }
+
+        return false
     }
 
     private func toggle(to expanded: Bool) {
@@ -713,9 +578,13 @@ private struct ExpandedShelfView: View {
     private var shelfGrid: some View {
         let target = shelfID
         let sel = $selection
+        // Newest-first in the expanded view so the just-dropped tile lands at
+        // the top of the grid where the user is looking. Storage order stays
+        // append-at-end (the collapsed stack still puts the newest tile on top).
+        let displayed = Array(items.reversed())
         return ScrollView(.vertical, showsIndicators: false) {
             LazyVGrid(columns: columns, alignment: .center, spacing: 18) {
-                ForEach(items) { item in
+                ForEach(displayed) { item in
                     DocumentGridItem(
                         item: item,
                         manager: manager,
@@ -761,9 +630,10 @@ private struct ExpandedShelfView: View {
     private var shelfList: some View {
         let target = shelfID
         let sel = $selection
+        let displayed = Array(items.reversed())
         return ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 2) {
-                ForEach(items) { item in
+                ForEach(displayed) { item in
                     DocumentListItem(
                         item: item,
                         manager: manager,

@@ -69,14 +69,6 @@ private final class ShelfActionTargets: NSObject {
         service.perform(withItems: urls)
     }
 
-    @objc func copyLink() {
-        let token = UUID().uuidString.prefix(10).lowercased()
-        let link = "https://shelf.local/s/\(token)"
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.writeObjects([link as NSString])
-    }
-
     @objc func addFromClipboard() {
         _ = manager.addFromClipboard(to: shelfID)
     }
@@ -97,6 +89,10 @@ private final class ShelfActionTargets: NSObject {
 
     @objc func clear() {
         manager.clear(shelfID: shelfID)
+    }
+
+    @objc func undo() {
+        manager.performUndo()
     }
 
     // MARK: - Identity
@@ -344,12 +340,12 @@ private final class ShelfActionTargets: NSObject {
 
     @objc func moveAllToTrash() {
         let items = manager.items(of: shelfID)
-        var urlToID: [String: UUID] = [:]
+        var urlToItem: [String: ShelfItem] = [:]
         var urls: [URL] = []
         for item in items {
             guard let url = item.fileURL,
                   FileManager.default.fileExists(atPath: url.path) else { continue }
-            urlToID[url.standardizedFileURL.path] = item.id
+            urlToItem[url.standardizedFileURL.path] = item
             urls.append(url)
         }
         guard !urls.isEmpty else { return }
@@ -357,12 +353,17 @@ private final class ShelfActionTargets: NSObject {
         let mgr = manager
         let shelfRef = shelfID
         NSWorkspace.shared.recycle(urls) { trashed, _ in
-            let trashedKeys = trashed.keys.map { $0.standardizedFileURL.path }
             Task { @MainActor in
-                for path in trashedKeys {
-                    if let id = urlToID[path] {
-                        mgr.removeItem(id: id, from: shelfRef)
-                    }
+                let trashedItems = trashed.keys.compactMap {
+                    urlToItem[$0.standardizedFileURL.path]
+                }
+                mgr.captureTrashUndo(
+                    items: trashedItems,
+                    trashedURLs: trashed,
+                    in: shelfRef
+                )
+                for item in trashedItems {
+                    mgr.removeItem(id: item.id, from: shelfRef)
                 }
             }
         }
@@ -474,16 +475,6 @@ enum ShelfActionMenuBuilder {
         menu.addItem(.separator())
 
         menu.addItem(makeItem(
-            title: "Copy Shareable Link",
-            symbol: "link",
-            action: #selector(ShelfActionTargets.copyLink),
-            target: targets,
-            enabled: hasFiles
-        ))
-
-        menu.addItem(.separator())
-
-        menu.addItem(makeItem(
             title: "Add From Clipboard",
             symbol: "doc.on.clipboard",
             action: #selector(ShelfActionTargets.addFromClipboard),
@@ -511,6 +502,22 @@ enum ShelfActionMenuBuilder {
         identity.image = symbol("tag")
         identity.submenu = makeIdentityMenu(manager: manager, shelfID: shelfID, targets: targets)
         menu.addItem(identity)
+
+        // Undo (Cmd-Z) — title reflects what's about to be reversed so the
+        // user knows whether they're undoing a Clear or a Move-to-Trash. The
+        // row stays in the menu when there's nothing to undo (disabled), so
+        // discoverability isn't tied to recent activity.
+        let undoTitle = manager.undoSnapshot?.menuTitle ?? "Undo"
+        let undo = NSMenuItem(
+            title: undoTitle,
+            action: #selector(ShelfActionTargets.undo),
+            keyEquivalent: "z"
+        )
+        undo.keyEquivalentModifierMask = .command
+        undo.target = targets
+        undo.image = symbol("arrow.uturn.backward")
+        undo.isEnabled = manager.canUndo
+        menu.addItem(undo)
 
         menu.addItem(makeItem(
             title: "Clear Shelf",

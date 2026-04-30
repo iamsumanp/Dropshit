@@ -710,13 +710,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         parkedShelfIDs.insert(id)
         parkedShelfOrder.append(id)
         let frame = parkedFrame(for: id, on: panel.screen)
-        animate(panel: panel, to: frame)
+        // Tiny pause so the just-dropped item visibly lands before the
+        // panel starts gliding away — but short enough that it doesn't look
+        // like the panel got stuck at the drop location.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, let panel = self.panels[id] else { return }
+            self.animateParked(panel: panel, to: frame)
+        }
+    }
+
+    /// Park animation uses a longer duration and a softer ease-in/out curve
+    /// than the regular panel resize so the shelf glides up to the top-right
+    /// corner instead of snapping there. Keeps `animate(panel:to:)` snappy
+    /// for everything else (expand, dock, drag-restore).
+    private func animateParked(panel: NSPanel, to frame: NSRect) {
+        suppressMoveCheck = true
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.95
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.32, 0.0, 0.18, 1.0)
+            ctx.allowsImplicitAnimation = true
+            panel.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            self?.suppressMoveCheck = false
+        })
     }
 
     private func relayoutParkedShelves() {
         for id in parkedShelfOrder {
             guard let panel = panels[id] else { continue }
-            animate(panel: panel, to: parkedFrame(for: id, on: panel.screen))
+            animateParked(panel: panel, to: parkedFrame(for: id, on: panel.screen))
         }
     }
 
@@ -1002,6 +1024,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return nil
             case "c":
                 self.manager.copyRequested.send(shelfID)
+                return nil
+            case "z":
+                guard self.manager.canUndo else { return event }
+                self.manager.performUndo()
                 return nil
             default:
                 return event

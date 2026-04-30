@@ -72,6 +72,11 @@ final class ShelfStore {
 
     private func persist(_ item: ShelfItem) -> PersistedShelfItem {
         let bookmark: Data? = {
+            // Text snippets are backed by a temp `.txt` that's regenerated
+            // from the snippet content on load — persisting a bookmark to
+            // that path would resolve to a missing file (temp dir is wiped
+            // between sessions) and the item would silently drop on load.
+            if item.type == .text { return nil }
             guard let url = item.fileURL else { return nil }
             return try? url.bookmarkData(
                 options: [],
@@ -134,10 +139,14 @@ final class ShelfStore {
                         if stale { anyStale = true }
                     }
                 } else if let text = record.text {
+                    // Re-stage a temp .txt so the loaded snippet has a backing
+                    // fileURL — needed for Open / Reveal-in-Finder to work
+                    // (the temp dir is wiped between sessions).
+                    let url = ShelfItem.writeTextToTemp(text)
                     items.append(ShelfItem(
                         id: record.id,
                         type: .text,
-                        fileURL: nil,
+                        fileURL: url,
                         textContent: text,
                         thumbnail: nil,
                         createdAt: record.createdAt
