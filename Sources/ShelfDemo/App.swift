@@ -434,7 +434,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func clearAllShelvesAction() {
-        for shelf in manager.shelves {
+        // Pinned shelves are deliberately preserved — the pin is the user's
+        // signal to keep that shelf around regardless of cleanup actions, and
+        // matches the auto-expiry behavior (which also skips pinned shelves).
+        for shelf in manager.shelves where !shelf.pinned {
             panels[shelf.id]?.orderOut(nil)
             panels.removeValue(forKey: shelf.id)
             manager.removeShelf(id: shelf.id)
