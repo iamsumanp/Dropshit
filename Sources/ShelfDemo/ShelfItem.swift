@@ -19,6 +19,13 @@ struct ShelfItem: Identifiable, Equatable {
     let createdAt: Date
     let pixelSize: CGSize?
     let pageCount: Int?
+    let isDirectory: Bool
+    /// Recursive total of bytes owned by a directory item. Populated lazily
+    /// in the background by `ShelfManager.recomputeFolderSize` because
+    /// `URLResourceKey.fileSizeKey` on a directory returns ~0 instead of the
+    /// content total. nil for files (which use `byteSize` directly) and for
+    /// directories whose computation hasn't finished yet.
+    let cachedFolderBytes: Int64?
 
     init(
         id: UUID = UUID(),
@@ -29,7 +36,9 @@ struct ShelfItem: Identifiable, Equatable {
         thumbnailIsIcon: Bool = true,
         createdAt: Date = Date(),
         pixelSize: CGSize? = nil,
-        pageCount: Int? = nil
+        pageCount: Int? = nil,
+        isDirectory: Bool = false,
+        cachedFolderBytes: Int64? = nil
     ) {
         self.id = id
         self.type = type
@@ -40,6 +49,8 @@ struct ShelfItem: Identifiable, Equatable {
         self.createdAt = createdAt
         self.pixelSize = pixelSize
         self.pageCount = pageCount
+        self.isDirectory = isDirectory
+        self.cachedFolderBytes = cachedFolderBytes
     }
 
     var displayName: String {
@@ -52,6 +63,7 @@ struct ShelfItem: Identifiable, Equatable {
     }
 
     var byteSize: Int64? {
+        if isDirectory { return cachedFolderBytes }
         guard let url = fileURL,
               let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
               let size = values.fileSize else { return nil }
@@ -59,6 +71,12 @@ struct ShelfItem: Identifiable, Equatable {
     }
 
     var displayMeta: String {
+        if isDirectory {
+            if let bytes = cachedFolderBytes {
+                return Self.format(bytes: bytes)
+            }
+            return "Folder"
+        }
         switch type {
         case .image:
             let size = byteSize.map { Self.format(bytes: $0) }

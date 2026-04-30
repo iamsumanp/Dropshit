@@ -107,12 +107,13 @@ final class ShelfStore {
             for record in shelfRecord.items {
                 if let bookmark = record.bookmark {
                     var stale = false
+                    var isDir: ObjCBool = false
                     if let url = try? URL(
                         resolvingBookmarkData: bookmark,
                         options: [],
                         relativeTo: nil,
                         bookmarkDataIsStale: &stale
-                    ), fm.fileExists(atPath: url.path) {
+                    ), fm.fileExists(atPath: url.path, isDirectory: &isDir) {
                         let type: ShelfItem.ItemType = (record.type == "image") ? .image : .file
                         let icon = NSWorkspace.shared.icon(forFile: url.path)
                         let pixelSize = (type == .image)
@@ -127,7 +128,8 @@ final class ShelfStore {
                             thumbnail: icon,
                             createdAt: record.createdAt,
                             pixelSize: pixelSize,
-                            pageCount: pageCount
+                            pageCount: pageCount,
+                            isDirectory: isDir.boolValue
                         ))
                         if stale { anyStale = true }
                     }

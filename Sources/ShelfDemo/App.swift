@@ -55,6 +55,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItemIconCancellable: AnyCancellable?
 
+    // Auto-park (top-right stack) state — populated only when the
+    // "shelf.autoParkTopRight" preference is on. We track per-shelf item
+    // counts so we only park on the 0→non-empty transition (the first drop
+    // after creation), not on every subsequent change.
+    private var lastItemCounts: [UUID: Int] = [:]
+    private var parkedShelfIDs: Set<UUID> = []
+    private var parkedShelfOrder: [UUID] = []
+    private let parkMargin: CGFloat = 12
+    private let parkSpacing: CGFloat = 12
+
+    // Outside-click watcher: a single global mouse-down monitor that's
+    // always installed; the "shelf.closeOnOutsideClick" flag is checked
+    // inside the handler so toggling the setting takes effect immediately
+    // without needing to install/uninstall the monitor.
+    private var outsideClickMonitor: Any?
+
     private func applyStatusIcon(dropping: Bool) {
         guard let button = statusItem?.button else { return }
         // Custom-drawn glyph: rounded-square outline with the dot fully
@@ -152,7 +168,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shelvesCancellable = manager.$shelves
             .sink { [weak self] shelves in
                 self?.reconcileEmptyEphemeralShelves(shelves)
+                self?.checkAutoPark(shelves)
             }
+
+        installOutsideClickWatcher()
 
         duplicateToastCancellable = manager.duplicateRejected
             .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main, latest: true)
@@ -556,14 +575,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func hidePanel(for shelfID: UUID) {
         panels[shelfID]?.orderOut(nil)
+        // Empty shelves are invisible in Recent Shelves, so dismissing them
+        // would otherwise leave a zombie behind. Tear them down completely
+        // when the user clicks X on an empty shelf.
+        if manager.items(of: shelfID).isEmpty {
+            panels.removeValue(forKey: shelfID)
+            ephemeralShelfIDs.remove(shelfID)
+            emptyCloseTimers.removeValue(forKey: shelfID)?.invalidate()
+            manager.removeShelf(id: shelfID)
+        }
     }
 
     private func makePanel(for shelfID: UUID) -> FloatingPanel<ShelfContainerView> {
         let rect = NSRect(origin: .zero, size: collapsedSize)
+        let isEphemeral = ephemeralShelfIDs.contains(shelfID)
         return FloatingPanel(contentRect: rect) { [weak self, manager] in
             ShelfContainerView(
                 manager: manager,
                 shelfID: shelfID,
+                isEphemeral: isEphemeral,
                 onClose: { self?.hidePanel(for: shelfID) },
                 onResize: { expanded in self?.setPanelExpanded(shelfID, expanded: expanded) },
                 onDockChanged: { docked in self?.setPanelDocked(shelfID, docked: docked) }
@@ -640,6 +670,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 restore = NSRect(origin: NSPoint(x: originX, y: originY), size: size)
             }
             animate(panel: panel, to: restore)
+        }
+    }
+
+    // MARK: - Auto-park (top-right)
+
+    /// Detects 0→non-empty transitions per shelf and, if the setting is on,
+    /// slides the shelf's panel up to the top-right corner where it stacks
+    /// behind any other parked shelves. Also prunes tracking for shelves
+    /// that have been removed.
+    private func checkAutoPark(_ shelves: [Shelf]) {
+        let live = Set(shelves.map(\.id))
+        // Drop tracking for shelves that no longer exist so the stacking
+        // index stays compact when shelves are dismissed.
+        if parkedShelfOrder.contains(where: { !live.contains($0) }) {
+            parkedShelfOrder.removeAll { !live.contains($0) }
+            parkedShelfIDs.formIntersection(live)
+            // Reposition remaining parked shelves into the now-tighter stack.
+            relayoutParkedShelves()
+        }
+        lastItemCounts = lastItemCounts.filter { live.contains($0.key) }
+
+        let enabled = UserDefaults.standard.bool(forKey: "shelf.autoParkTopRight")
+        for shelf in shelves {
+            let prev = lastItemCounts[shelf.id] ?? 0
+            let now = shelf.items.count
+            lastItemCounts[shelf.id] = now
+            // Park on the very first drop into a freshly-empty shelf.
+            // Subsequent drops are ignored so the user can drag the panel
+            // anywhere they like without it snapping back.
+            if enabled, prev == 0, now > 0, !parkedShelfIDs.contains(shelf.id) {
+                parkShelf(id: shelf.id)
+            }
+        }
+    }
+
+    private func parkShelf(id: UUID) {
+        guard let panel = panels[id] else { return }
+        parkedShelfIDs.insert(id)
+        parkedShelfOrder.append(id)
+        let frame = parkedFrame(for: id, on: panel.screen)
+        animate(panel: panel, to: frame)
+    }
+
+    private func relayoutParkedShelves() {
+        for id in parkedShelfOrder {
+            guard let panel = panels[id] else { continue }
+            animate(panel: panel, to: parkedFrame(for: id, on: panel.screen))
+        }
+    }
+
+    private func parkedFrame(for id: UUID, on screen: NSScreen?) -> NSRect {
+        let visible = screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let index = parkedShelfOrder.firstIndex(of: id) ?? 0
+        let originX = visible.maxX - collapsedSize.width - parkMargin
+        let originY = visible.maxY - collapsedSize.height - parkMargin
+            - CGFloat(index) * (collapsedSize.height + parkSpacing)
+        return NSRect(
+            x: originX,
+            y: max(visible.minY + parkMargin, originY),
+            width: collapsedSize.width,
+            height: collapsedSize.height
+        )
+    }
+
+    // MARK: - Close on outside click
+
+    private func installOutsideClickWatcher() {
+        guard outsideClickMonitor == nil else { return }
+        // Global monitor only fires for clicks NOT in our app, so clicks on
+        // the panels themselves (and on our menu bar item) don't trigger
+        // this — exactly the semantics we want.
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleOutsideClick()
+            }
+        }
+    }
+
+    private func handleOutsideClick() {
+        guard UserDefaults.standard.bool(forKey: "shelf.closeOnOutsideClick") else { return }
+        let visible = panels.filter { $0.value.isVisible }
+        guard !visible.isEmpty else { return }
+        let location = NSEvent.mouseLocation
+        // Inside-panel safety net: a click that lands on a panel's frame is
+        // treated as inside even if the global monitor still routed it to
+        // us (e.g. the panel is non-activating and the OS counted the click
+        // as "outside the app").
+        let inside = visible.contains { $0.value.frame.contains(location) }
+        guard !inside else { return }
+        // Only collapse panels that are currently in expanded mode — the
+        // user wants the detail view to fold back to the pill, not for the
+        // whole shelf to disappear.
+        for shelfID in expandedShelfIDs where visible.keys.contains(shelfID) {
+            manager.collapseRequested.send(shelfID)
         }
     }
 
@@ -856,16 +984,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func installPasteShortcut() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
-            guard let (shelfID, panel) = self.panels.first(where: { $0.value.isKeyWindow }) else {
+            guard let (shelfID, _) = self.panels.first(where: { $0.value.isKeyWindow }) else {
                 return event
             }
-            _ = panel
             guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else {
                 return event
             }
-            guard event.charactersIgnoringModifiers == "v" else { return event }
-            let added = self.manager.addFromClipboard(to: shelfID)
-            return added > 0 ? nil : event
+            switch event.charactersIgnoringModifiers {
+            case "v":
+                let added = self.manager.addFromClipboard(to: shelfID)
+                return added > 0 ? nil : event
+            case "a":
+                // Forward to the expanded view via Combine; it owns the
+                // selection state and decides what "all" means in the
+                // current view (shelf root vs folder browse).
+                self.manager.selectAllRequested.send(shelfID)
+                return nil
+            case "c":
+                self.manager.copyRequested.send(shelfID)
+                return nil
+            default:
+                return event
+            }
         }
     }
 }

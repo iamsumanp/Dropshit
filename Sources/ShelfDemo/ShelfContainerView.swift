@@ -1,11 +1,16 @@
 import CryptoKit
 import ImageIO
+import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
     let shelfID: UUID
+    /// True for shake-created shelves, which auto-close via the shake-release
+    /// watcher and shouldn't show an X in their fresh-empty state. Menu-created
+    /// shelves have no auto-close path, so they always need the X.
+    var isEphemeral: Bool = false
     var onClose: () -> Void = {}
     var onResize: (_ expanded: Bool) -> Void = { _ in }
     var onDockChanged: (_ docked: Bool) -> Void = { _ in }
@@ -41,7 +46,8 @@ struct ShelfContainerView: View {
                     shelfID: shelfID,
                     selection: $selection,
                     onCollapse: { toggle(to: false) },
-                    onClose: onClose
+                    onClose: onClose,
+                    onDock: { toggleDock(to: true) }
                 )
                 .padding(10)
                 .transition(.opacity)
@@ -52,7 +58,7 @@ struct ShelfContainerView: View {
                     shelfID: shelfID,
                     items: items,
                     isDragging: manager.isDragging,
-                    showCloseWhenEmpty: hasEverHadItems,
+                    showCloseWhenEmpty: hasEverHadItems || !isEphemeral,
                     onClose: onClose,
                     onOpenDocuments: { toggle(to: true) },
                     onDock: { toggleDock(to: true) },
@@ -92,6 +98,14 @@ struct ShelfContainerView: View {
         .onReceive(manager.undockRequested) { id in
             guard id == shelfID, isDocked else { return }
             withAnimation(transitionAnimation) { isDocked = false }
+        }
+        .onReceive(manager.collapseRequested) { id in
+            // External nudge (e.g. outside-click setting) — only act if the
+            // signal is for our shelf and we're currently expanded. Going
+            // through the normal toggle path keeps the panel resize +
+            // SwiftUI animation in lockstep.
+            guard id == shelfID, isExpanded else { return }
+            toggle(to: false)
         }
         // Empty-but-expanded is a dead-end UX (nothing to do, nothing to
         // show), so fall back to collapsed and let that view handle the
@@ -141,26 +155,31 @@ struct ShelfContainerView: View {
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.folder.identifier)
                         || provider.hasItemConformingToTypeIdentifier(UTType.directory.identifier) {
-                // Folder drag: Finder offers BOTH `public.folder` and a
-                // synthesized `public.zip-archive` representation. The
-                // typed-data fallback below would happily pick the zip
-                // (because it has a .zip filename extension) and stage
-                // it as a random archive. Match the folder type first
-                // and pull the actual directory via loadFileRepresentation
-                // so the entry shows up as the original folder.
+                // Finder folder drags surface only `public.folder` to SwiftUI's
+                // .onDrop (no `public.file-url`), so we have to load the folder
+                // by its directory UTI. `loadInPlaceFileRepresentation` returns
+                // the original on-disk URL without materializing a temp copy
+                // when isInPlace is true — essential for multi-GB folders that
+                // `loadFileRepresentation` would copy twice (system temp, then
+                // our managed temp).
                 handled = true
                 let folderUTI = provider.hasItemConformingToTypeIdentifier(UTType.folder.identifier)
                     ? UTType.folder.identifier
                     : UTType.directory.identifier
-                _ = provider.loadFileRepresentation(forTypeIdentifier: folderUTI) { tempURL, _ in
-                    guard let tempURL else { return }
-                    // The system deletes tempURL after this callback
-                    // returns, so copy into our managed temp directory.
+                _ = provider.loadInPlaceFileRepresentation(forTypeIdentifier: folderUTI) { sourceURL, isInPlace, _ in
+                    guard let sourceURL else { return }
+                    if isInPlace {
+                        Task { @MainActor in manager.addFile(url: sourceURL, to: targetShelfID) }
+                        return
+                    }
+                    // Out-of-place fallback: system handed us a transient temp
+                    // URL it will delete after the callback returns. Copy into
+                    // our managed temp dir so the shelf entry stays valid.
                     let dest = FileManager.default.temporaryDirectory
-                        .appendingPathComponent(tempURL.lastPathComponent)
+                        .appendingPathComponent(sourceURL.lastPathComponent)
                     try? FileManager.default.removeItem(at: dest)
                     do {
-                        try FileManager.default.copyItem(at: tempURL, to: dest)
+                        try FileManager.default.copyItem(at: sourceURL, to: dest)
                         Task { @MainActor in manager.addFile(url: dest, to: targetShelfID) }
                     } catch {
                         NSLog("Shelf: failed to copy dropped folder: \(error)")
@@ -386,9 +405,24 @@ private struct ExpandedShelfView: View {
     @Binding var selection: Set<UUID>
     let onCollapse: () -> Void
     let onClose: () -> Void
+    let onDock: () -> Void
 
     @AppStorage("shelf.viewMode") private var viewModeRaw: String = ShelfViewMode.grid.rawValue
     @State private var draggingIDs: Set<UUID> = []
+
+    // Folder navigation: empty stack = shelf root (showing ShelfItems);
+    // non-empty stack's `last` is the currently-displayed folder, with its
+    // children cached in `folderContents`. The cache survives pop/push so
+    // navigating back is instant.
+    @State private var folderStack: [URL] = []
+    @State private var folderContents: [URL: [FolderEntry]] = [:]
+    @State private var loadingFolders: Set<URL> = []
+    @State private var navDirection: NavDirection = .forward
+    /// Selection inside the folder browser — keyed by `FolderEntry.id`.
+    /// Cleared on push/pop because each level renders a fresh entry list
+    /// with new UUIDs, so carrying selection across levels would just hold
+    /// stale identifiers.
+    @State private var folderSelection: Set<UUID> = []
 
     private var viewMode: ShelfViewMode {
         get { ShelfViewMode(rawValue: viewModeRaw) ?? .grid }
@@ -405,16 +439,40 @@ private struct ExpandedShelfView: View {
 
     private var shelf: Shelf? { manager.shelf(id: shelfID) }
 
+    private var currentFolderURL: URL? { folderStack.last }
+    private var inFolder: Bool { !folderStack.isEmpty }
+    private var currentEntries: [FolderEntry] {
+        currentFolderURL.flatMap { folderContents[$0] } ?? []
+    }
+    private var isCurrentFolderLoading: Bool {
+        guard let url = currentFolderURL else { return false }
+        return folderContents[url] == nil && loadingFolders.contains(url)
+    }
+
     private var countTitle: String {
         items.count == 1 ? "1 File" : "\(items.count) Files"
     }
 
     private var headerPrimary: String {
+        if let url = currentFolderURL { return url.lastPathComponent }
         if let n = shelf?.name, !n.isEmpty { return n }
         return countTitle
     }
 
     private var headerSubtitle: String {
+        if inFolder {
+            let shelfTitle = (shelf?.name?.isEmpty == false ? shelf?.name : nil) ?? "Shelf"
+            let parents = folderStack.dropLast().map(\.lastPathComponent)
+            let crumbs = ([shelfTitle] + parents).joined(separator: " › ")
+            let countLabel: String
+            if isCurrentFolderLoading {
+                countLabel = "loading…"
+            } else {
+                let n = currentEntries.count
+                countLabel = n == 1 ? "1 item" : "\(n) items"
+            }
+            return "\(crumbs) · \(countLabel)"
+        }
         let size = manager.displayTotalSize(of: shelfID)
         if shelf?.name?.isEmpty == false {
             return size == "—" ? countTitle : "\(countTitle) · \(size)"
@@ -434,15 +492,52 @@ private struct ExpandedShelfView: View {
         // tile clicks before they reach this gesture, so this only fires
         // on empty/black-space clicks.
         .contentShape(Rectangle())
-        .onTapGesture { selection.removeAll() }
+        .onTapGesture {
+            selection.removeAll()
+            folderSelection.removeAll()
+        }
+        .onReceive(manager.selectAllRequested) { id in
+            // Cmd-A from the app-level key monitor. Routes to the right
+            // selection set depending on what the user is actually looking at.
+            guard id == shelfID else { return }
+            if inFolder {
+                folderSelection = Set(currentEntries.map(\.id))
+            } else {
+                selection = Set(items.map(\.id))
+            }
+        }
+        .onReceive(manager.copyRequested) { id in
+            // Cmd-C: write the URLs of the current selection to the
+            // pasteboard. Empty selection is a no-op so we don't accidentally
+            // clobber the user's clipboard.
+            guard id == shelfID else { return }
+            let urls: [URL]
+            if inFolder {
+                urls = currentEntries
+                    .filter { folderSelection.contains($0.id) }
+                    .map(\.url)
+            } else {
+                urls = items
+                    .filter { selection.contains($0.id) }
+                    .compactMap(\.fileURL)
+            }
+            guard !urls.isEmpty else { return }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects(urls.map { $0 as NSURL })
+        }
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 10) {
-            CircularIconButton(systemName: "chevron.left", action: onCollapse)
+            CircularIconButton(systemName: "chevron.left", action: handleBack)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    if let accent = shelf?.accent {
+                    if inFolder {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.7))
+                    } else if let accent = shelf?.accent {
                         ShelfAccentBadge(accent: accent, size: 10)
                     }
                     Text(headerPrimary)
@@ -450,7 +545,7 @@ private struct ExpandedShelfView: View {
                         .foregroundStyle(Color.white)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if shelf?.pinned == true {
+                    if !inFolder, shelf?.pinned == true {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.7))
@@ -459,28 +554,98 @@ private struct ExpandedShelfView: View {
                 Text(headerSubtitle)
                     .font(.system(size: 12))
                     .foregroundStyle(Color.white.opacity(0.55))
+                    .lineLimit(1)
+                    .truncationMode(.head)
             }
             Spacer(minLength: 0)
+            // Quick-dock to the right edge — same animation as the grab
+            // handle in the collapsed view, surfaced here so the user
+            // doesn't need to collapse first to park the panel. Sized
+            // smaller than the primary back button so it sits comfortably
+            // alongside the view-mode toggle.
+            CircularIconButton(
+                systemName: "arrow.right.to.line",
+                action: onDock,
+                size: 22,
+                iconSize: 9
+            )
             ViewModeToggle(
                 mode: Binding(
                     get: { viewMode },
                     set: { viewModeRaw = $0.rawValue }
                 )
             )
-            ShelfActionMenu(manager: manager, shelfID: shelfID)
+            if !inFolder {
+                ShelfActionMenu(manager: manager, shelfID: shelfID)
+            }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        // Empty case is handled by auto-collapsing in ShelfContainerView,
-        // so the expanded view only ever needs to render the populated grid
-        // or list.
+        ZStack {
+            if inFolder {
+                folderContentBody
+                    .id(currentFolderURL?.path ?? "folder-root")
+                    .transition(navTransition)
+            } else {
+                shelfContentBody
+                    .id("shelf-root")
+                    .transition(navTransition)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    private var navTransition: AnyTransition {
+        switch navDirection {
+        case .forward:
+            return .asymmetric(
+                insertion: .move(edge: .trailing).combined(with: .opacity),
+                removal: .move(edge: .leading).combined(with: .opacity)
+            )
+        case .back:
+            return .asymmetric(
+                insertion: .move(edge: .leading).combined(with: .opacity),
+                removal: .move(edge: .trailing).combined(with: .opacity)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var shelfContentBody: some View {
         switch viewMode {
-        case .grid:
-            grid
-        case .list:
-            list
+        case .grid: shelfGrid
+        case .list: shelfList
+        }
+    }
+
+    @ViewBuilder
+    private var folderContentBody: some View {
+        if isCurrentFolderLoading {
+            VStack(spacing: 10) {
+                ProgressView().progressViewStyle(.circular)
+                Text("Loading…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if currentEntries.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "tray")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.38))
+                Text("Empty folder")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            switch viewMode {
+            case .grid: folderGrid
+            case .list: folderList
+            }
         }
     }
 
@@ -491,8 +656,61 @@ private struct ExpandedShelfView: View {
         return [itemID]
     }
 
+    // MARK: - Folder navigation
 
-    private var grid: some View {
+    private func handleBack() {
+        if inFolder {
+            popFolder()
+        } else {
+            onCollapse()
+        }
+    }
+
+    private func enterFolder(_ url: URL) {
+        guard folderStack.last != url else { return }
+        navDirection = .forward
+        loadFolderIfNeeded(url)
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+            folderStack.append(url)
+            selection.removeAll()
+            folderSelection.removeAll()
+        }
+    }
+
+    private func popFolder() {
+        guard !folderStack.isEmpty else { return }
+        navDirection = .back
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+            _ = folderStack.removeLast()
+            folderSelection.removeAll()
+        }
+    }
+
+    private func handleEntryActivation(_ entry: FolderEntry) {
+        if entry.isDirectory { enterFolder(entry.url) }
+    }
+
+    private func handleEntryDoubleClick(_ entry: FolderEntry) {
+        if entry.isDirectory {
+            enterFolder(entry.url)
+        } else {
+            NSWorkspace.shared.open(entry.url)
+        }
+    }
+
+    private func loadFolderIfNeeded(_ url: URL) {
+        if folderContents[url] != nil || loadingFolders.contains(url) { return }
+        loadingFolders.insert(url)
+        Task.detached(priority: .userInitiated) {
+            let entries = readDirectory(url: url)
+            await MainActor.run {
+                folderContents[url] = entries
+                loadingFolders.remove(url)
+            }
+        }
+    }
+
+    private var shelfGrid: some View {
         let target = shelfID
         let sel = $selection
         return ScrollView(.vertical, showsIndicators: false) {
@@ -523,6 +741,9 @@ private struct ExpandedShelfView: View {
                         onDragEnd: {
                             manager.isDragging = false
                             draggingIDs.removeAll()
+                        },
+                        onNavigateInto: {
+                            if let url = item.fileURL { enterFolder(url) }
                         }
                     )
                 }
@@ -537,7 +758,7 @@ private struct ExpandedShelfView: View {
         )
     }
 
-    private var list: some View {
+    private var shelfList: some View {
         let target = shelfID
         let sel = $selection
         return ScrollView(.vertical, showsIndicators: false) {
@@ -567,6 +788,9 @@ private struct ExpandedShelfView: View {
                         onDragEnd: {
                             manager.isDragging = false
                             draggingIDs.removeAll()
+                        },
+                        onNavigateInto: {
+                            if let url = item.fileURL { enterFolder(url) }
                         }
                     )
                 }
@@ -576,7 +800,59 @@ private struct ExpandedShelfView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var folderGrid: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVGrid(columns: columns, alignment: .center, spacing: 18) {
+                ForEach(currentEntries) { entry in
+                    FolderEntryGridCell(
+                        entry: entry,
+                        isSelected: folderSelection.contains(entry.id),
+                        onClick: { modifiers in handleFolderClick(entry: entry, modifiers: modifiers) },
+                        onDoubleClick: { handleEntryDoubleClick(entry) },
+                        onNavigateInto: { enterFolder(entry.url) }
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var folderList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 2) {
+                ForEach(currentEntries) { entry in
+                    FolderEntryListItem(
+                        entry: entry,
+                        isSelected: folderSelection.contains(entry.id),
+                        onClick: { modifiers in handleFolderClick(entry: entry, modifiers: modifiers) },
+                        onDoubleClick: { handleEntryDoubleClick(entry) },
+                        onNavigateInto: { enterFolder(entry.url) }
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func handleFolderClick(entry: FolderEntry, modifiers: NSEvent.ModifierFlags) {
+        if modifiers.contains(.command) {
+            if folderSelection.contains(entry.id) {
+                folderSelection.remove(entry.id)
+            } else {
+                folderSelection.insert(entry.id)
+            }
+        } else {
+            folderSelection = [entry.id]
+        }
+    }
+
     private func handleClick(itemID: UUID, modifiers: NSEvent.ModifierFlags) {
+        // Card clicks always go to selection. Folders are entered via the
+        // inline chevron button rendered next to their name — that's the
+        // only navigation affordance, so a stray card click can't accidentally
+        // descend into a folder while the user is just trying to select it.
         if modifiers.contains(.command) {
             if selection.contains(itemID) {
                 selection.remove(itemID)
@@ -589,29 +865,429 @@ private struct ExpandedShelfView: View {
     }
 
     private var revealButton: some View {
-        let allSelected = !items.isEmpty && selection.count == items.count
         return HStack(spacing: 8) {
             Spacer()
-            SelectAllButton(
-                allSelected: allSelected,
-                enabled: !items.isEmpty,
-                action: {
-                    if allSelected {
-                        selection.removeAll()
-                    } else {
-                        selection = Set(items.map(\.id))
+            if inFolder {
+                let allSelected = !currentEntries.isEmpty
+                    && folderSelection.count == currentEntries.count
+                let someSelected = !folderSelection.isEmpty
+                SelectAllButton(
+                    allSelected: allSelected,
+                    someSelected: someSelected,
+                    enabled: !currentEntries.isEmpty,
+                    action: {
+                        if allSelected {
+                            folderSelection.removeAll()
+                        } else {
+                            folderSelection = Set(currentEntries.map(\.id))
+                        }
                     }
-                }
-            )
-            RevealInFinderButton(enabled: !items.isEmpty, action: revealInFinder)
+                )
+            } else {
+                let allSelected = !items.isEmpty && selection.count == items.count
+                let someSelected = !selection.isEmpty
+                SelectAllButton(
+                    allSelected: allSelected,
+                    someSelected: someSelected,
+                    enabled: !items.isEmpty,
+                    action: {
+                        if allSelected {
+                            selection.removeAll()
+                        } else {
+                            selection = Set(items.map(\.id))
+                        }
+                    }
+                )
+            }
+            RevealInFinderButton(enabled: revealEnabled, action: revealAction)
             Spacer()
         }
     }
 
-    private func revealInFinder() {
+    private var revealEnabled: Bool {
+        if inFolder { return currentFolderURL != nil }
+        return !items.isEmpty
+    }
+
+    private func revealAction() {
+        if let url = currentFolderURL {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
+        }
         let urls = items.compactMap { $0.fileURL }
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+}
+
+private enum NavDirection {
+    case forward, back
+}
+
+/// Small circular chevron button rendered next to a folder name in the grid
+/// label area (below the card). Clicking it descends into the folder; the
+/// surrounding card click is reserved for selection so users can pick up a
+/// folder without accidentally navigating into it.
+private struct InlineNavigateChevron: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Color.white.opacity(hovering ? 1.0 : 0.85))
+                .frame(width: 14, height: 14)
+                .background(
+                    Circle()
+                        .fill(Color.white.opacity(hovering ? 0.22 : 0.12))
+                )
+                .overlay(
+                    Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// Lightweight description of a single child inside a folder being browsed.
+/// Created on-demand when the user navigates into a folder; not persisted.
+struct FolderEntry: Identifiable, Equatable {
+    let id: UUID
+    let url: URL
+    let isDirectory: Bool
+    let displayName: String
+    let byteSize: Int64?
+    let pixelSize: CGSize?
+
+    init(
+        id: UUID = UUID(),
+        url: URL,
+        isDirectory: Bool,
+        displayName: String,
+        byteSize: Int64? = nil,
+        pixelSize: CGSize? = nil
+    ) {
+        self.id = id
+        self.url = url
+        self.isDirectory = isDirectory
+        self.displayName = displayName
+        self.byteSize = byteSize
+        self.pixelSize = pixelSize
+    }
+}
+
+/// Synchronously enumerates the immediate children of `url`. Intended to be
+/// called from a detached task — it's blocking I/O. Hidden files are skipped
+/// to match Finder's default view. We deliberately don't pass
+/// `.skipsPackageDescendants` because the user explicitly clicked the
+/// chevron to descend; macOS would otherwise return `[]` for any directory
+/// it considers a package (`.app`, `.bundle`, but also some user-named dirs
+/// with extensions registered as packages — e.g. a folder called `dist.js`
+/// shows zero children even when it has gigabytes of content).
+private func readDirectory(url: URL) -> [FolderEntry] {
+    let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentTypeKey]
+    let urls: [URL]
+    do {
+        urls = try FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        )
+    } catch {
+        NSLog("Shelf: readDirectory failed for %@ — %@",
+              url.path as NSString, error as NSError)
+        return []
+    }
+    let entries = urls.map { childURL -> FolderEntry in
+        let values = try? childURL.resourceValues(forKeys: Set(keys))
+        let isDir = values?.isDirectory ?? false
+        let bytes: Int64? = isDir ? nil : values?.fileSize.map(Int64.init)
+        // Pull pixel dimensions for image children so the grid cell can pre-size
+        // itself before the QL thumbnail arrives — keeps the layout from
+        // jumping when previews crossfade in.
+        let pixelSize: CGSize? = {
+            guard !isDir,
+                  let type = values?.contentType,
+                  type.conforms(to: .image)
+            else { return nil }
+            return ShelfItem.readImagePixelSize(url: childURL)
+        }()
+        return FolderEntry(
+            url: childURL,
+            isDirectory: isDir,
+            displayName: childURL.lastPathComponent,
+            byteSize: bytes,
+            pixelSize: pixelSize
+        )
+    }
+    return entries.sorted { lhs, rhs in
+        if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+        return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+    }
+}
+
+/// Grid cell for a single child inside a folder being browsed. Mirrors
+/// DocumentGridItem's visual language (card shadow, hover lift, label below)
+/// but loads its thumbnail lazily and has no shelf-specific affordances
+/// (no remove button, no shelf context menu).
+private struct FolderEntryGridCell: View {
+    let entry: FolderEntry
+    let isSelected: Bool
+    /// Receives the click's modifier flags so the caller can implement
+    /// cmd-click toggling. Plain click selects only this entry; navigating
+    /// into a folder requires the inline chevron next to the name.
+    let onClick: (NSEvent.ModifierFlags) -> Void
+    let onDoubleClick: () -> Void
+    let onNavigateInto: () -> Void
+
+    @State private var hovering = false
+    @State private var thumbnail: NSImage?
+    @State private var thumbnailIsIcon = true
+
+    private static let cardLongSide: CGFloat = 100
+    private static let labelMinWidth: CGFloat = 90
+
+    private var cardSize: CGSize {
+        if let s = entry.pixelSize, s.width > 0, s.height > 0 {
+            let aspect = s.width / s.height
+            if aspect.isFinite, aspect > 0 {
+                if aspect >= 1 {
+                    return CGSize(width: Self.cardLongSide, height: Self.cardLongSide / aspect)
+                } else {
+                    return CGSize(width: Self.cardLongSide * aspect, height: Self.cardLongSide)
+                }
+            }
+        }
+        return CGSize(width: 78, height: 100)
+    }
+
+    var body: some View {
+        let size = cardSize
+        VStack(spacing: 8) {
+            cardFace(size: size)
+                .frame(width: size.width, height: size.height)
+                .shadow(color: .black.opacity(hovering ? 0.22 : 0.14),
+                        radius: hovering ? 18 : 12, x: 0, y: hovering ? 10 : 6)
+                .shadow(color: .black.opacity(0.06), radius: 2, x: 0, y: 1)
+                .scaleEffect(hovering ? 1.03 : 1.0)
+                .offset(y: hovering ? -3 : 0)
+                .overlay(
+                    ShelfDragOverlay(
+                        provider: { [entry.url] },
+                        onStart: {},
+                        onEnd: {},
+                        onClick: onClick,
+                        onDoubleClick: onDoubleClick,
+                        visibleCardSize: { size }
+                    )
+                )
+                .animation(.spring(response: 0.32, dampingFraction: 0.72), value: hovering)
+                .onHover { hovering = $0 }
+                .frame(height: Self.cardLongSide, alignment: .bottom)
+
+            VStack(spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(entry.displayName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if entry.isDirectory {
+                        InlineNavigateChevron(action: onNavigateInto)
+                    }
+                }
+                Text(metaText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.white.opacity(isSelected ? 0.75 : 0.5))
+                    .lineLimit(1)
+            }
+            .frame(width: max(size.width, Self.labelMinWidth))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.accentColor.opacity(isSelected ? 1 : 0))
+        )
+        .onAppear { loadThumbnailIfNeeded() }
+    }
+
+    private var metaText: String {
+        if entry.isDirectory {
+            if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
+            return "Folder"
+        }
+        if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
+        let ext = entry.url.pathExtension
+        return ext.isEmpty ? "File" : ext.uppercased()
+    }
+
+    @ViewBuilder
+    private func cardFace(size: CGSize) -> some View {
+        let isImageEntry = !entry.isDirectory && entry.pixelSize != nil
+        if let thumb = thumbnail {
+            if isImageEntry, !thumbnailIsIcon {
+                // Real photo preview: fill the whole card, rounded corners.
+                Image(nsImage: thumb)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size.width, height: size.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+                    )
+            } else {
+                // Everything else (folder icon, app icon, document preview) —
+                // render flush against the panel without a white "paper"
+                // backdrop, matching the rest of the shelf's visual language.
+                Image(nsImage: thumb)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size.width, height: size.height)
+            }
+        } else {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                )
+        }
+    }
+
+    private func loadThumbnailIfNeeded() {
+        if thumbnail != nil { return }
+        // Workspace icon shows up immediately so the cell isn't a blank
+        // square while QL renders. For images we then upgrade to QL's
+        // photo thumbnail; for everything else we ask QL only for the
+        // higher-resolution icon representation — otherwise QL renders
+        // the file's contents on a white "page", which leaks into the
+        // shelf's dark UI as a paper-like backdrop.
+        thumbnail = NSWorkspace.shared.icon(forFile: entry.url.path)
+        thumbnailIsIcon = true
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let isImageEntry = !entry.isDirectory && entry.pixelSize != nil
+        let reprTypes: QLThumbnailGenerator.Request.RepresentationTypes =
+            isImageEntry ? .all : .icon
+        let request = QLThumbnailGenerator.Request(
+            fileAt: entry.url,
+            size: CGSize(width: 256, height: 320),
+            scale: scale,
+            representationTypes: reprTypes
+        )
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
+            guard let rep else { return }
+            let image = rep.nsImage
+            let isIcon = (rep.type == .icon)
+            DispatchQueue.main.async {
+                self.thumbnail = image
+                self.thumbnailIsIcon = isIcon
+            }
+        }
+    }
+}
+
+/// List-view counterpart to FolderEntryGridCell.
+private struct FolderEntryListItem: View {
+    let entry: FolderEntry
+    let isSelected: Bool
+    let onClick: (NSEvent.ModifierFlags) -> Void
+    let onDoubleClick: () -> Void
+    let onNavigateInto: () -> Void
+
+    @State private var hovering = false
+    @State private var thumbnail: NSImage?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            thumbnailView
+                .frame(width: 22, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            Text(entry.displayName)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.white.opacity(0.92))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 6)
+
+            Text(metaText)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.white.opacity(0.5))
+                .lineLimit(1)
+
+            if entry.isDirectory {
+                InlineNavigateChevron(action: onNavigateInto)
+                    .frame(width: 16, height: 16)
+            } else {
+                Color.clear.frame(width: 16, height: 16)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected
+                      ? Color.accentColor
+                      : Color.white.opacity(hovering ? 0.06 : 0))
+        )
+        .overlay(
+            ShelfDragOverlay(
+                provider: { [entry.url] },
+                onStart: {},
+                onEnd: {},
+                onClick: onClick,
+                onDoubleClick: onDoubleClick
+            )
+        )
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: hovering)
+        .onAppear { loadThumbnail() }
+    }
+
+    private var metaText: String {
+        if entry.isDirectory {
+            if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
+            return "Folder"
+        }
+        if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
+        let ext = entry.url.pathExtension
+        return ext.isEmpty ? "File" : ext.uppercased()
+    }
+
+    @ViewBuilder
+    private var thumbnailView: some View {
+        if let thumb = thumbnail {
+            ZStack {
+                Color.white.opacity(0.97)
+                Image(nsImage: thumb)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .padding(2)
+            }
+        } else {
+            ZStack {
+                Color.white.opacity(0.10)
+                Image(systemName: entry.isDirectory ? "folder" : "doc")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(Color.white.opacity(0.7))
+            }
+        }
+    }
+
+    private func loadThumbnail() {
+        thumbnail = NSWorkspace.shared.icon(forFile: entry.url.path)
     }
 }
 
@@ -620,6 +1296,7 @@ private struct ExpandedShelfView: View {
 /// behavior in DocumentGridItem / DocumentListItem).
 private struct SelectAllButton: View {
     let allSelected: Bool
+    let someSelected: Bool
     let enabled: Bool
     let action: () -> Void
 
@@ -628,10 +1305,15 @@ private struct SelectAllButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: allSelected
-                      ? "checkmark.circle.fill"
-                      : "circle.dashed")
-                    .font(.system(size: 11, weight: .medium))
+                // Hide the leading glyph entirely when nothing is selected —
+                // the pill reads as a neutral "Select All" affordance until
+                // the user picks at least one item.
+                if someSelected {
+                    Image(systemName: allSelected
+                          ? "checkmark.circle.fill"
+                          : "circle.dashed")
+                        .font(.system(size: 11, weight: .medium))
+                }
                 Text(allSelected ? "Deselect All" : "Select All")
                     .font(.system(size: 12, weight: .medium))
             }
@@ -666,6 +1348,10 @@ private struct DocumentGridItem: View {
     let onClick: (NSEvent.ModifierFlags) -> Void
     let onDragStart: () -> Void
     let onDragEnd: () -> Void
+    /// Invoked when the user taps the inline chevron next to a directory's
+    /// name. Plain card clicks do not trigger this — the chevron is the
+    /// only navigation affordance.
+    let onNavigateInto: () -> Void
 
     @State private var hovering = false
 
@@ -742,11 +1428,16 @@ private struct DocumentGridItem: View {
             .frame(height: Self.cardLongSide, alignment: .bottom)
 
             VStack(spacing: 2) {
-                Text(item.displayName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.92))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 4) {
+                    Text(item.displayName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if item.isDirectory {
+                        InlineNavigateChevron(action: onNavigateInto)
+                    }
+                }
                 Text(item.displayMeta)
                     .font(.system(size: 10))
                     .foregroundStyle(Color.white.opacity(isSelected ? 0.75 : 0.5))
@@ -921,6 +1612,7 @@ private struct DocumentListItem: View {
     let onClick: (NSEvent.ModifierFlags) -> Void
     let onDragStart: () -> Void
     let onDragEnd: () -> Void
+    let onNavigateInto: () -> Void
 
     @State private var hovering = false
 
@@ -951,6 +1643,8 @@ private struct DocumentListItem: View {
                             .foregroundStyle(Color.black.opacity(0.5), Color.white.opacity(0.95))
                     }
                     .buttonStyle(.plain)
+                } else if item.isDirectory {
+                    InlineNavigateChevron(action: onNavigateInto)
                 } else {
                     Color.clear
                 }

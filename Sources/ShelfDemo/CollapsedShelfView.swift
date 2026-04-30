@@ -49,6 +49,8 @@ struct CollapsedShelfView: View {
                 StackedDocumentPreview(
                     namespace: namespace,
                     items: items,
+                    manager: manager,
+                    shelfID: shelfID,
                     onDragStart: onDragStart,
                     onDragEnd: onDragEnd
                 )
@@ -92,6 +94,8 @@ struct CollapsedShelfView: View {
 private struct StackedDocumentPreview: View {
     let namespace: Namespace.ID
     let items: [ShelfItem]
+    let manager: ShelfManager
+    let shelfID: UUID
     var onDragStart: () -> Void = {}
     var onDragEnd: () -> Void = {}
 
@@ -130,7 +134,17 @@ private struct StackedDocumentPreview: View {
                                 ShelfDragOverlay(
                                     provider: { items.compactMap { $0.fileURL } },
                                     onStart: onDragStart,
-                                    onEnd: onDragEnd
+                                    onEnd: onDragEnd,
+                                    menuBuilder: { [manager, shelfID] in
+                                        // The collapsed stack represents the
+                                        // whole shelf, not a single item — show
+                                        // the same shelf-level menu the chevron
+                                        // button shows in the expanded header.
+                                        ShelfActionMenuBuilder.make(
+                                            manager: manager,
+                                            shelfID: shelfID
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -303,6 +317,14 @@ private struct EmptyStackPreview: View {
 struct CircularIconButton: View {
     let systemName: String
     let action: () -> Void
+    /// Diameter of the circular button. Defaults to the standard 30pt; pass
+    /// a smaller value for inline header affordances that shouldn't compete
+    /// visually with primary back/close buttons.
+    var size: CGFloat = 30
+    /// Icon point size inside the circle. Scales with `size` if not set
+    /// explicitly; the default keeps backward compatibility with all
+    /// existing 30pt callers.
+    var iconSize: CGFloat = 11
 
     @State private var hovering = false
 
@@ -315,10 +337,10 @@ struct CircularIconButton: View {
                         Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
                     )
                 Image(systemName: systemName)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: iconSize, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.92))
             }
-            .frame(width: 30, height: 30)
+            .frame(width: size, height: size)
             .scaleEffect(hovering ? 1.08 : 1.0)
         }
         .buttonStyle(.plain)

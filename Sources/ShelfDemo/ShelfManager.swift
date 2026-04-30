@@ -30,6 +30,17 @@ final class ShelfManager: ObservableObject {
     // Emits the shelfID when a docked panel was dragged away from the edge
     // and should revert to collapsed state in-place.
     let undockRequested = PassthroughSubject<UUID, Never>()
+    // Emits the key shelfID when Cmd-A is pressed in its panel; the
+    // expanded view picks this up to select every shelf-root item.
+    let selectAllRequested = PassthroughSubject<UUID, Never>()
+    // Emits the key shelfID when Cmd-C is pressed in its panel; the
+    // expanded view writes the current selection (root or folder) to
+    // the pasteboard.
+    let copyRequested = PassthroughSubject<UUID, Never>()
+    // Emits a shelfID when the AppDelegate wants the corresponding panel
+    // to collapse from its expanded state back to the pill view (e.g. on
+    // an outside click when the close-on-outside-click setting is on).
+    let collapseRequested = PassthroughSubject<UUID, Never>()
 
     private final class CachedThumbnail: NSObject {
         let image: NSImage
@@ -56,7 +67,11 @@ final class ShelfManager: ObservableObject {
         for shelf in shelves {
             for item in shelf.items {
                 if let url = item.fileURL {
-                    generateThumbnail(for: url, replacing: item.id)
+                    if item.isDirectory {
+                        recomputeFolderSize(itemID: item.id, in: shelf.id)
+                    } else {
+                        generateThumbnail(for: url, replacing: item.id)
+                    }
                 }
             }
         }
@@ -269,7 +284,9 @@ final class ShelfManager: ObservableObject {
             thumbnailIsIcon: old.thumbnailIsIcon,
             createdAt: old.createdAt,
             pixelSize: old.pixelSize,
-            pageCount: old.pageCount
+            pageCount: old.pageCount,
+            isDirectory: old.isDirectory,
+            cachedFolderBytes: old.cachedFolderBytes
         )
     }
 
@@ -283,24 +300,87 @@ final class ShelfManager: ObservableObject {
         // Use UTType conformance instead of a hardcoded extension list so RAW
         // formats (CR2, NEF, ARW, DNG, etc.) and newer codecs (AVIF, HEIF) all
         // get image-style flush rendering rather than the doc-card white frame.
-        let contentType = (try? url.resourceValues(forKeys: [.contentTypeKey])
-            .contentType)
-        let isImage = contentType?.conforms(to: .image) ?? false
+        let values = (try? url.resourceValues(forKeys: [.contentTypeKey, .isDirectoryKey]))
+        let contentType = values?.contentType
+        let isDirectory = values?.isDirectory ?? false
+        let isImage = !isDirectory && (contentType?.conforms(to: .image) ?? false)
         let type: ShelfItem.ItemType = isImage ? .image : .file
         let placeholder = NSWorkspace.shared.icon(forFile: url.path)
         let pixelSize = isImage ? ShelfItem.readImagePixelSize(url: url) : nil
-        let pageCount = (contentType?.conforms(to: .pdf) ?? false)
+        let pageCount = (!isDirectory && (contentType?.conforms(to: .pdf) ?? false))
             ? ShelfItem.readPDFPageCount(url: url) : nil
         let item = ShelfItem(
             type: type,
             fileURL: url,
             thumbnail: placeholder,
             pixelSize: pixelSize,
-            pageCount: pageCount
+            pageCount: pageCount,
+            isDirectory: isDirectory
         )
         addItem(item, to: shelfID)
-        generateThumbnail(for: url, replacing: item.id)
+        if isDirectory {
+            recomputeFolderSize(itemID: item.id, in: shelfID)
+        } else {
+            generateThumbnail(for: url, replacing: item.id)
+        }
         return item
+    }
+
+    /// Walks the directory at the item's URL and writes the total content
+    /// size back to the item. Runs on a detached task so a multi-GB folder
+    /// can't block the UI.
+    func recomputeFolderSize(itemID: UUID, in shelfID: UUID) {
+        guard let sIdx = index(of: shelfID),
+              let iIdx = shelves[sIdx].items.firstIndex(where: { $0.id == itemID }),
+              shelves[sIdx].items[iIdx].isDirectory,
+              let url = shelves[sIdx].items[iIdx].fileURL
+        else { return }
+        Task.detached(priority: .utility) {
+            let bytes = Self.totalBytes(of: url)
+            await MainActor.run { [weak self] in
+                self?.applyFolderSize(itemID: itemID, in: shelfID, bytes: bytes)
+            }
+        }
+    }
+
+    private func applyFolderSize(itemID: UUID, in shelfID: UUID, bytes: Int64) {
+        guard let sIdx = index(of: shelfID),
+              let iIdx = shelves[sIdx].items.firstIndex(where: { $0.id == itemID })
+        else { return }
+        let old = shelves[sIdx].items[iIdx]
+        guard old.cachedFolderBytes != bytes else { return }
+        shelves[sIdx].items[iIdx] = ShelfItem(
+            id: old.id,
+            type: old.type,
+            fileURL: old.fileURL,
+            textContent: old.textContent,
+            thumbnail: old.thumbnail,
+            thumbnailIsIcon: old.thumbnailIsIcon,
+            createdAt: old.createdAt,
+            pixelSize: old.pixelSize,
+            pageCount: old.pageCount,
+            isDirectory: old.isDirectory,
+            cachedFolderBytes: bytes
+        )
+    }
+
+    private nonisolated static func totalBytes(of url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey]
+            )
+            if values?.isRegularFile == true, let size = values?.fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 
 
@@ -374,7 +454,9 @@ final class ShelfManager: ObservableObject {
                     thumbnailIsIcon: isIcon,
                     createdAt: old.createdAt,
                     pixelSize: old.pixelSize,
-                    pageCount: old.pageCount
+                    pageCount: old.pageCount,
+                    isDirectory: old.isDirectory,
+                    cachedFolderBytes: old.cachedFolderBytes
                 )
                 // Crossfade the skeleton/icon → real preview swap so it
                 // doesn't read as a hard pop.
@@ -395,11 +477,19 @@ final class ShelfManager: ObservableObject {
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2
         let size = CGSize(width: 256, height: 320)
+        // Only image files get the full QL preview pipeline; everything else
+        // gets the file-type icon. QL's "thumbnail" rep for text/markdown/json
+        // is a rendered page on a white background, which clashes with the
+        // dark shelf and reads as a stray paper backdrop.
+        let isImage = (try? url.resourceValues(forKeys: [.contentTypeKey])
+            .contentType)?.conforms(to: .image) ?? false
+        let reprTypes: QLThumbnailGenerator.Request.RepresentationTypes =
+            isImage ? .all : .icon
         let request = QLThumbnailGenerator.Request(
             fileAt: url,
             size: size,
             scale: scale,
-            representationTypes: .all
+            representationTypes: reprTypes
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] rep, _ in
             guard let rep else { return }
