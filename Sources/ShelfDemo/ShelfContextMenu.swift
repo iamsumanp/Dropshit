@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// Target object for NSMenuItem actions. Must be retained for the menu's lifetime,
 /// so we keep a strong reference on the ShelfMenu container.
@@ -10,19 +11,22 @@ final class ShelfItemActions: NSObject {
     let shelfID: UUID
     weak var manager: ShelfManager?
     weak var conversionService: ConversionService?
+    weak var ocrService: OCRService?
 
     init(
         item: ShelfItem,
         selectedItems: [ShelfItem],
         shelfID: UUID,
         manager: ShelfManager?,
-        conversionService: ConversionService?
+        conversionService: ConversionService?,
+        ocrService: OCRService?
     ) {
         self.item = item
         self.selectedItems = selectedItems
         self.shelfID = shelfID
         self.manager = manager
         self.conversionService = conversionService
+        self.ocrService = ocrService
     }
 
     @objc func openWith(_ sender: NSMenuItem) {
@@ -192,6 +196,38 @@ final class ShelfItemActions: NSObject {
         }
     }
 
+    @objc func makeSearchable(_ sender: NSMenuItem) {
+        guard let service = ocrService else { return }
+        for it in selectedItems {
+            guard let url = it.fileURL else { continue }
+            // Skip items already running an OCR task — re-enqueue would just
+            // queue a redundant task at the back of the line.
+            guard service.progress[it.id] == nil else { continue }
+            service.enqueueMakeSearchable(
+                sourceItemID: it.id,
+                shelfID: shelfID,
+                source: url
+            )
+        }
+    }
+
+    @objc func extractText(_ sender: NSMenuItem) {
+        guard let service = ocrService else { return }
+        for it in selectedItems {
+            guard let url = it.fileURL else { continue }
+            guard service.progress[it.id] == nil else { continue }
+            let isPDF = url.pathExtension.lowercased() == "pdf"
+                || (try? url.resourceValues(forKeys: [.contentTypeKey]))?
+                    .contentType?.conforms(to: .pdf) == true
+            service.enqueueExtractText(
+                sourceItemID: it.id,
+                shelfID: shelfID,
+                source: url,
+                isPDF: isPDF
+            )
+        }
+    }
+
     @objc func compressImage() {
         guard let url = item.fileURL else { return }
         guard let quality = ImageActionPrompts.compressionQuality() else { return }
@@ -245,7 +281,8 @@ enum ShelfContextMenu {
         selectedItems: [ShelfItem],
         shelfID: UUID,
         manager: ShelfManager?,
-        conversionService: ConversionService?
+        conversionService: ConversionService?,
+        ocrService: OCRService?
     ) -> NSMenu {
         let menu = ShelfMenu()
         let actions = ShelfItemActions(
@@ -253,7 +290,8 @@ enum ShelfContextMenu {
             selectedItems: selectedItems,
             shelfID: shelfID,
             manager: manager,
-            conversionService: conversionService
+            conversionService: conversionService,
+            ocrService: ocrService
         )
         menu.actions = actions
         let hasFile = item.fileURL != nil
@@ -420,6 +458,17 @@ enum ShelfContextMenu {
             )
             entry.submenu = submenu
             menu.addItem(entry)
+        }
+
+        let appendedOCR = OCRMenu.appendItems(
+            to: menu,
+            items: actions.selectedItems,
+            target: actions,
+            makeSearchableSelector: #selector(ShelfItemActions.makeSearchable(_:)),
+            extractTextSelector: #selector(ShelfItemActions.extractText(_:))
+        )
+        if appendedOCR > 0 {
+            // No separator — sits in the same logical group as Convert to ▶.
         }
 
         if isImage {

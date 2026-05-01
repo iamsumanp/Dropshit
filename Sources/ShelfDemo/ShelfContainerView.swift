@@ -651,7 +651,8 @@ private struct ExpandedShelfView: View {
                                 selectedItems: selectedShelfItems,
                                 shelfID: target,
                                 manager: manager,
-                                conversionService: conversionService
+                                conversionService: conversionService,
+                                ocrService: nil  // wired in Task 10
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
@@ -717,7 +718,8 @@ private struct ExpandedShelfView: View {
                                 selectedItems: selectedShelfItems,
                                 shelfID: target,
                                 manager: manager,
-                                conversionService: conversionService
+                                conversionService: conversionService,
+                                ocrService: nil  // wired in Task 10
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
