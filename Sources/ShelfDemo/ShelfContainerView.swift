@@ -39,6 +39,8 @@ struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
     var conversionService: ConversionService
     var ocrService: OCRService
+    var pdfEditService: PDFEditService
+    var pdfEditWindow: PDFEditWindow
     let shelfID: UUID
     /// True for shake-created shelves, which auto-close via the shake-release
     /// watcher and shouldn't show an X in their fresh-empty state. Menu-created
@@ -153,6 +155,7 @@ struct ShelfContainerView: View {
         }
         .environmentObject(conversionService)
         .environmentObject(ocrService)
+        .environmentObject(pdfEditService)
     }
 
     private func handleDrop(_ pasteboard: NSPasteboard) -> Bool {
@@ -313,6 +316,7 @@ private struct ExpandedShelfView: View {
     @State private var draggingIDs: Set<UUID> = []
     @EnvironmentObject private var conversionService: ConversionService
     @EnvironmentObject private var ocrService: OCRService
+    @EnvironmentObject private var pdfEditService: PDFEditService
 
     // Folder navigation: empty stack = shelf root (showing ShelfItems);
     // non-empty stack's `last` is the currently-displayed folder, with its
@@ -686,6 +690,7 @@ private struct ExpandedShelfView: View {
         )
         .environmentObject(conversionService)
         .environmentObject(ocrService)
+        .environmentObject(pdfEditService)
     }
 
     private var shelfList: some View {
@@ -751,6 +756,7 @@ private struct ExpandedShelfView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environmentObject(conversionService)
         .environmentObject(ocrService)
+        .environmentObject(pdfEditService)
     }
 
     private var folderGrid: some View {
