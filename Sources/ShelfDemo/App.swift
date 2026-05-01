@@ -48,6 +48,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var ocrCompletedExtractedCancellable: AnyCancellable?
     private var ocrFailedCancellable: AnyCancellable?
 
+    // PDF text-replacement service and editing window.
+    private let pdfEditService = PDFEditService()
+    private lazy var pdfEditWindow = PDFEditWindow(pdfEditService: pdfEditService)
+    private var pdfEditCompletedCancellable: AnyCancellable?
+    private var pdfEditFailedCancellable: AnyCancellable?
+
     // Duplicate-drop toast.
     private var duplicateToastCancellable: AnyCancellable?
     private var toastPanel: NSPanel?
@@ -244,6 +250,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
 
         ocrFailedCancellable = ocrService.failed
+            .sink { [weak self] error in
+                guard error != .cancelled else { return }
+                self?.showConversionFailureToast(message: error.displayMessage)
+            }
+
+        pdfEditCompletedCancellable = pdfEditService.completed
+            .sink { [weak self] (url, shelfID) in
+                self?.manager.addFile(url: url, to: shelfID)
+            }
+
+        pdfEditFailedCancellable = pdfEditService.failed
             .sink { [weak self] error in
                 guard error != .cancelled else { return }
                 self?.showConversionFailureToast(message: error.displayMessage)
@@ -756,11 +773,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func makePanel(for shelfID: UUID) -> FloatingPanel<ShelfContainerView> {
         let rect = NSRect(origin: .zero, size: collapsedSize)
         let isEphemeral = ephemeralShelfIDs.contains(shelfID)
-        return FloatingPanel(contentRect: rect) { [weak self, manager, conversionService, ocrService] in
+        return FloatingPanel(contentRect: rect) { [weak self, manager, conversionService, ocrService, pdfEditService, pdfEditWindow] in
             ShelfContainerView(
                 manager: manager,
                 conversionService: conversionService,
                 ocrService: ocrService,
+                pdfEditService: pdfEditService,
+                pdfEditWindow: pdfEditWindow,
                 shelfID: shelfID,
                 isEphemeral: isEphemeral,
                 onClose: { self?.hidePanel(for: shelfID) },
@@ -1191,6 +1210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         conversionService.cancelAll()
         ocrService.cancelAll()
+        pdfEditService.cancelAll()
+        pdfEditWindow.close()
     }
 
     // MARK: - Paste shortcut

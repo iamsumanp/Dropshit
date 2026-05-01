@@ -82,7 +82,8 @@ struct ShelfContainerView: View {
                     selection: $selection,
                     onCollapse: { toggle(to: false) },
                     onClose: onClose,
-                    onDock: { toggleDock(to: true) }
+                    onDock: { toggleDock(to: true) },
+                    pdfEditWindow: pdfEditWindow
                 )
                 .padding(10)
                 .transition(.opacity)
@@ -311,6 +312,7 @@ private struct ExpandedShelfView: View {
     let onCollapse: () -> Void
     let onClose: () -> Void
     let onDock: () -> Void
+    var pdfEditWindow: PDFEditWindow
 
     @AppStorage("shelf.viewMode") private var viewModeRaw: String = ShelfViewMode.grid.rawValue
     @State private var draggingIDs: Set<UUID> = []
@@ -660,8 +662,8 @@ private struct ExpandedShelfView: View {
                                 manager: manager,
                                 conversionService: conversionService,
                                 ocrService: ocrService,
-                                pdfEditService: nil,
-                                pdfEditWindow: nil
+                                pdfEditService: pdfEditService,
+                                pdfEditWindow: pdfEditWindow
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
@@ -731,8 +733,8 @@ private struct ExpandedShelfView: View {
                                 manager: manager,
                                 conversionService: conversionService,
                                 ocrService: ocrService,
-                                pdfEditService: nil,
-                                pdfEditWindow: nil
+                                pdfEditService: pdfEditService,
+                                pdfEditWindow: pdfEditWindow
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
