@@ -88,6 +88,187 @@ enum PDFOCR {
         }
         return joined
     }
+
+    /// Rebuild a searchable copy of `source` next to it as
+    /// `<stem> (searchable).pdf`. Falls back to `~/Library/Caches/Dropshit/OCR/`
+    /// when the source directory is read-only.
+    static func makeSearchable(
+        source: URL,
+        progress: @Sendable (Double) -> Void
+    ) async throws -> URL {
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw OCRError.sourceMissing
+        }
+        guard let pdf = PDFDocument(url: source), pdf.pageCount > 0 else {
+            throw OCRError.sourceUnreadable
+        }
+
+        let finalDest = try resolveSearchableDestination(for: source)
+        let tempURL = finalDest
+            .deletingPathExtension()
+            .appendingPathExtension("part\(UUID().uuidString.prefix(8))")
+            .appendingPathExtension("pdf")
+
+        // Open a CGContext-backed PDF for writing. Pass nil mediaBox here; we
+        // override per-page in beginPDFPage's pageInfo dict so each page can
+        // adopt its source's exact size.
+        guard let consumer = CGDataConsumer(url: tempURL as CFURL) else {
+            throw OCRError.destinationUnwritable
+        }
+        var emptyBox = CGRect.zero
+        guard let writeContext = CGContext(consumer: consumer, mediaBox: &emptyBox, nil) else {
+            throw OCRError.destinationUnwritable
+        }
+
+        let pageCount = pdf.pageCount
+        for i in 0..<pageCount {
+            do {
+                try Task.checkCancellation()
+            } catch {
+                writeContext.closePDF()
+                try? FileManager.default.removeItem(at: tempURL)
+                throw OCRError.cancelled
+            }
+            guard let page = pdf.page(at: i),
+                  let pageImage = renderPageImage(page) else {
+                progress(Double(i + 1) / Double(pageCount))
+                continue
+            }
+
+            let pageBounds = page.bounds(for: .mediaBox)
+            let lines: [RecognizedLine]
+            do {
+                lines = try await OCREngine.recognize(image: pageImage)
+            } catch {
+                writeContext.closePDF()
+                try? FileManager.default.removeItem(at: tempURL)
+                throw OCRError.recognitionFailed(reason: error.localizedDescription)
+            }
+
+            try drawSearchablePage(
+                into: writeContext,
+                pageBounds: pageBounds,
+                pageImage: pageImage,
+                lines: lines
+            )
+
+            progress(Double(i + 1) / Double(pageCount))
+        }
+
+        writeContext.closePDF()
+
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: finalDest)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw OCRError.destinationUnwritable
+        }
+        return finalDest
+    }
+
+    /// Draw one page into the output PDF: the rendered imagery as a JPEG
+    /// at quality 0.9 (re-encoded explicitly so CGPDFContext embeds the
+    /// JPEG bytes as-is instead of re-compressing at its lower default),
+    /// plus invisible CoreText runs over each recognized line.
+    private static func drawSearchablePage(
+        into ctx: CGContext,
+        pageBounds: CGRect,
+        pageImage: CGImage,
+        lines: [RecognizedLine]
+    ) throws {
+        // Re-encode the page imagery as JPEG quality 0.9. CGPDFContext
+        // recognizes a JPEG-backed CGImage and embeds the source bytes
+        // verbatim — that's how we get the 0.9 quality the spec calls for.
+        let jpegData = NSMutableData()
+        guard let imageDest = CGImageDestinationCreateWithData(
+            jpegData,
+            "public.jpeg" as CFString,
+            1,
+            nil
+        ) else {
+            throw OCRError.recognitionFailed(reason: "image encoder unavailable")
+        }
+        let imageProps: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 0.9
+        ]
+        CGImageDestinationAddImage(imageDest, pageImage, imageProps as CFDictionary)
+        guard CGImageDestinationFinalize(imageDest) else {
+            throw OCRError.recognitionFailed(reason: "image encode failed")
+        }
+        guard let jpegSource = CGImageSourceCreateWithData(jpegData, nil),
+              let embeddableImage = CGImageSourceCreateImageAtIndex(jpegSource, 0, nil)
+        else {
+            throw OCRError.recognitionFailed(reason: "JPEG read-back failed")
+        }
+
+        var rect = pageBounds
+        let mediaData = NSData(bytes: &rect, length: MemoryLayout<CGRect>.size)
+        let pageInfo: [String: Any] = [
+            kCGPDFContextMediaBox as String: mediaData
+        ]
+        ctx.beginPDFPage(pageInfo as CFDictionary)
+        ctx.draw(embeddableImage, in: pageBounds)
+
+        // Invisible text mode: glyph metrics are recorded so selection /
+        // search work, but no visible ink is laid down.
+        ctx.saveGState()
+        ctx.setTextDrawingMode(.invisible)
+        for line in lines {
+            // Vision's boundingBox is normalized + bottom-left origin —
+            // exactly the convention CGContext uses, so scale directly.
+            let lineRect = CGRect(
+                x: line.boundingBox.minX * pageBounds.width,
+                y: line.boundingBox.minY * pageBounds.height,
+                width: line.boundingBox.width * pageBounds.width,
+                height: line.boundingBox.height * pageBounds.height
+            )
+            // OCR boxes are tight to glyphs; using the box height as the
+            // font size keeps select-rects close to what the user sees.
+            let fontSize = max(lineRect.height, 1)
+            let font = CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font
+            ]
+            let attr = NSAttributedString(string: line.text, attributes: attributes)
+            let ctLine = CTLineCreateWithAttributedString(attr)
+            ctx.textPosition = CGPoint(x: lineRect.minX, y: lineRect.minY)
+            CTLineDraw(ctLine, ctx)
+        }
+        ctx.restoreGState()
+
+        ctx.endPDFPage()
+    }
+
+    private static func resolveSearchableDestination(for source: URL) throws -> URL {
+        let stem = source.deletingPathExtension().lastPathComponent + " (searchable)"
+        let preferred = source
+            .deletingLastPathComponent()
+            .appendingPathComponent(stem)
+            .appendingPathExtension("pdf")
+        let candidate = UniqueDestination.url(preferred: preferred)
+
+        // Empirical writability probe — same pattern as the Conversion module.
+        let probe = candidate
+            .deletingPathExtension()
+            .appendingPathExtension("probe\(UUID().uuidString.prefix(6))")
+        do {
+            try Data().write(to: probe)
+            try? FileManager.default.removeItem(at: probe)
+            return candidate
+        } catch {
+            let cache = try FileManager.default.url(
+                for: .cachesDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ).appendingPathComponent("Dropshit/OCR", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: cache, withIntermediateDirectories: true
+            )
+            let p = cache.appendingPathComponent(stem).appendingPathExtension("pdf")
+            return UniqueDestination.url(preferred: p)
+        }
+    }
 }
 
 // `import AppKit` is implicit in the project (every other file does); the
