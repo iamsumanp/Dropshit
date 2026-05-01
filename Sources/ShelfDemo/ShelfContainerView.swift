@@ -655,7 +655,9 @@ private struct ExpandedShelfView: View {
                                 shelfID: target,
                                 manager: manager,
                                 conversionService: conversionService,
-                                ocrService: ocrService
+                                ocrService: ocrService,
+                                pdfEditService: nil,
+                                pdfEditWindow: nil
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
@@ -723,7 +725,9 @@ private struct ExpandedShelfView: View {
                                 shelfID: target,
                                 manager: manager,
                                 conversionService: conversionService,
-                                ocrService: ocrService
+                                ocrService: ocrService,
+                                pdfEditService: nil,
+                                pdfEditWindow: nil
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },

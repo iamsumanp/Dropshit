@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import UniformTypeIdentifiers
 
 /// Target object for NSMenuItem actions. Must be retained for the menu's lifetime,
@@ -12,6 +13,8 @@ final class ShelfItemActions: NSObject {
     weak var manager: ShelfManager?
     weak var conversionService: ConversionService?
     weak var ocrService: OCRService?
+    weak var pdfEditService: PDFEditService?
+    weak var pdfEditWindow: PDFEditWindow?
 
     init(
         item: ShelfItem,
@@ -19,7 +22,9 @@ final class ShelfItemActions: NSObject {
         shelfID: UUID,
         manager: ShelfManager?,
         conversionService: ConversionService?,
-        ocrService: OCRService?
+        ocrService: OCRService?,
+        pdfEditService: PDFEditService?,
+        pdfEditWindow: PDFEditWindow?
     ) {
         self.item = item
         self.selectedItems = selectedItems
@@ -27,6 +32,13 @@ final class ShelfItemActions: NSObject {
         self.manager = manager
         self.conversionService = conversionService
         self.ocrService = ocrService
+        self.pdfEditService = pdfEditService
+        self.pdfEditWindow = pdfEditWindow
+    }
+
+    @objc func replaceText(_ sender: NSMenuItem) {
+        guard let url = item.fileURL else { return }
+        pdfEditWindow?.open(sourceURL: url, shelfID: shelfID)
     }
 
     @objc func openWith(_ sender: NSMenuItem) {
@@ -282,7 +294,9 @@ enum ShelfContextMenu {
         shelfID: UUID,
         manager: ShelfManager?,
         conversionService: ConversionService?,
-        ocrService: OCRService?
+        ocrService: OCRService?,
+        pdfEditService: PDFEditService?,
+        pdfEditWindow: PDFEditWindow?
     ) -> NSMenu {
         let menu = ShelfMenu()
         let actions = ShelfItemActions(
@@ -291,7 +305,9 @@ enum ShelfContextMenu {
             shelfID: shelfID,
             manager: manager,
             conversionService: conversionService,
-            ocrService: ocrService
+            ocrService: ocrService,
+            pdfEditService: pdfEditService,
+            pdfEditWindow: pdfEditWindow
         )
         menu.actions = actions
         let hasFile = item.fileURL != nil
@@ -471,6 +487,24 @@ enum ShelfContextMenu {
             // No separator — sits in the same logical group as Convert to ▶.
         }
 
+        // Replace Text… is single-item only; only shown when PDF has selectable text.
+        if actions.selectedItems.count == 1,
+           let url = actions.item.fileURL,
+           url.pathExtension.lowercased() == "pdf",
+           pdfHasSelectableText(url: url) {
+            let mi = NSMenuItem(
+                title: "Replace Text…",
+                action: #selector(ShelfItemActions.replaceText(_:)),
+                keyEquivalent: ""
+            )
+            mi.target = actions
+            mi.image = NSImage(
+                systemSymbolName: "character.cursor.ibeam",
+                accessibilityDescription: nil
+            )
+            menu.addItem(mi)
+        }
+
         if isImage {
             menu.addItem(sectionHeader("Image Actions"))
 
@@ -554,6 +588,12 @@ enum ShelfContextMenu {
             item.image = image
         }
         menu.addItem(item)
+    }
+
+    private static func pdfHasSelectableText(url: URL) -> Bool {
+        guard let pdf = PDFDocument(url: url) else { return false }
+        let s = pdf.string ?? ""
+        return !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private static func appDisplayName(_ url: URL) -> String {
