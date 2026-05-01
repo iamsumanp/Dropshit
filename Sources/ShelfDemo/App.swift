@@ -37,6 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var shelvesCancellable: AnyCancellable?
     private let emptyCloseGrace: TimeInterval = 1.2
 
+    // Conversion service — owns all in-progress format conversions.
+    private let conversionService = ConversionService()
+    private var conversionCompletedCancellable: AnyCancellable?
+    private var conversionFailedCancellable: AnyCancellable?
+
     // Duplicate-drop toast.
     private var duplicateToastCancellable: AnyCancellable?
     private var toastPanel: NSPanel?
@@ -207,6 +212,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] shelfID in
                 self?.showDuplicateToast(for: shelfID)
+            }
+
+        conversionCompletedCancellable = conversionService.completed
+            .sink { [weak self] (url, shelfID) in
+                guard let self else { return }
+                self.manager.addFile(url: url, to: shelfID)
+            }
+
+        conversionFailedCancellable = conversionService.failed
+            .sink { [weak self] error in
+                // .cancelled is silent — the user initiated it, no toast needed.
+                guard error != .cancelled else { return }
+                self?.showConversionFailureToast(message: error.displayMessage)
             }
 
         runShelfExpiryPrune()
@@ -716,9 +734,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func makePanel(for shelfID: UUID) -> FloatingPanel<ShelfContainerView> {
         let rect = NSRect(origin: .zero, size: collapsedSize)
         let isEphemeral = ephemeralShelfIDs.contains(shelfID)
-        return FloatingPanel(contentRect: rect) { [weak self, manager] in
+        return FloatingPanel(contentRect: rect) { [weak self, manager, conversionService] in
             ShelfContainerView(
                 manager: manager,
+                conversionService: conversionService,
                 shelfID: shelfID,
                 isEphemeral: isEphemeral,
                 onClose: { self?.hidePanel(for: shelfID) },
@@ -1062,8 +1081,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func showDuplicateToast(for shelfID: UUID) {
         guard let shelfPanel = panels[shelfID], shelfPanel.isVisible else { return }
+        showToast("One or more items is\nalready present in the shelf", near: shelfPanel)
+    }
 
-        let panel = toastPanel ?? makeToastPanel()
+    private func showConversionFailureToast(message: String) {
+        // Reuse the toast panel infrastructure with custom text. If no shelf
+        // panel is currently visible, fall back to a banner attached to the
+        // first available shelf, or no-op (we'd rather drop the toast than
+        // pop a modal).
+        guard let firstVisible = panels.first(where: { $0.value.isVisible }) else {
+            NSLog("Shelf: \(message) (no visible panel for toast)")
+            return
+        }
+        showToast(message, near: firstVisible.value)
+    }
+
+    private func showToast(_ message: String, near shelfPanel: NSPanel) {
+        let panel = makeToastPanel(message: message)
+        toastPanel?.orderOut(nil)
         toastPanel = panel
 
         let shelfFrame = shelfPanel.frame
@@ -1098,7 +1133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func makeToastPanel() -> NSPanel {
+    private func makeToastPanel(message: String) -> NSPanel {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 56),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -1114,7 +1149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.ignoresMouseEvents = true
         panel.animationBehavior = .utilityWindow
 
-        let hosting = NSHostingView(rootView: DuplicateToastView())
+        let hosting = NSHostingView(rootView: ToastView(message: message))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         let container = NSView(frame: panel.contentView?.bounds ?? .zero)
         container.addSubview(hosting)
@@ -1126,6 +1161,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         panel.contentView = container
         return panel
+    }
+
+    // MARK: - Quit
+
+    func applicationWillTerminate(_ notification: Notification) {
+        conversionService.cancelAll()
     }
 
     // MARK: - Paste shortcut
@@ -1163,13 +1204,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-private struct DuplicateToastView: View {
+private struct ToastView: View {
+    let message: String
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(0.85))
-            Text("One or more items is\nalready present in the shelf")
+            Text(message)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.92))
                 .lineLimit(2)

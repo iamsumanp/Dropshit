@@ -37,6 +37,7 @@ private struct ConversionOverlay: View {
 
 struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
+    var conversionService: ConversionService
     let shelfID: UUID
     /// True for shake-created shelves, which auto-close via the shake-release
     /// watcher and shouldn't show an X in their fresh-empty state. Menu-created
@@ -149,6 +150,7 @@ struct ShelfContainerView: View {
             // shelf marked as a drop target forever.
             manager.setDropTargeted(shelfID: shelfID, false)
         }
+        .environmentObject(conversionService)
     }
 
     private func handleDrop(_ pasteboard: NSPasteboard) -> Bool {
@@ -307,8 +309,7 @@ private struct ExpandedShelfView: View {
 
     @AppStorage("shelf.viewMode") private var viewModeRaw: String = ShelfViewMode.grid.rawValue
     @State private var draggingIDs: Set<UUID> = []
-    // task 11 replaces this with the real injected service from AppDelegate
-    @StateObject private var conversionService = ConversionService()
+    @EnvironmentObject private var conversionService: ConversionService
 
     // Folder navigation: empty stack = shelf root (showing ShelfItems);
     // non-empty stack's `last` is the currently-displayed folder, with its
@@ -1305,7 +1306,7 @@ private struct DocumentGridItem: View {
                     onStart: onDragStart,
                     onEnd: onDragEnd,
                     menuBuilder: {
-                        ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: nil)
+                        ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: conversionService)
                     },
                     onClick: onClick,
                     onDoubleClick: {
@@ -1580,7 +1581,7 @@ private struct DocumentListItem: View {
                 onStart: onDragStart,
                 onEnd: onDragEnd,
                 menuBuilder: {
-                    ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: nil)
+                    ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: conversionService)
                 },
                 onClick: onClick,
                 onDoubleClick: {
