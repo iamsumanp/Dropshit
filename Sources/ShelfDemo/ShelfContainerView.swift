@@ -38,8 +38,7 @@ private struct ProgressOverlay: View {
 struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
     var conversionService: ConversionService
-    /// Placeholder until Task 10 threads the real OCRService through App.swift.
-    @StateObject private var ocrService = OCRService()
+    var ocrService: OCRService
     let shelfID: UUID
     /// True for shake-created shelves, which auto-close via the shake-release
     /// watcher and shouldn't show an X in their fresh-empty state. Menu-created
@@ -656,7 +655,7 @@ private struct ExpandedShelfView: View {
                                 shelfID: target,
                                 manager: manager,
                                 conversionService: conversionService,
-                                ocrService: nil  // wired in Task 10
+                                ocrService: ocrService
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
@@ -724,7 +723,7 @@ private struct ExpandedShelfView: View {
                                 shelfID: target,
                                 manager: manager,
                                 conversionService: conversionService,
-                                ocrService: nil  // wired in Task 10
+                                ocrService: ocrService
                             )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },

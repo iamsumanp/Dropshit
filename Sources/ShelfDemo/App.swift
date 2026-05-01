@@ -42,6 +42,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var conversionCompletedCancellable: AnyCancellable?
     private var conversionFailedCancellable: AnyCancellable?
 
+    // OCR service — owns all in-progress OCR jobs.
+    private let ocrService = OCRService()
+    private var ocrCompletedSearchableCancellable: AnyCancellable?
+    private var ocrCompletedExtractedCancellable: AnyCancellable?
+    private var ocrFailedCancellable: AnyCancellable?
+
     // Duplicate-drop toast.
     private var duplicateToastCancellable: AnyCancellable?
     private var toastPanel: NSPanel?
@@ -223,6 +229,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         conversionFailedCancellable = conversionService.failed
             .sink { [weak self] error in
                 // .cancelled is silent — the user initiated it, no toast needed.
+                guard error != .cancelled else { return }
+                self?.showConversionFailureToast(message: error.displayMessage)
+            }
+
+        ocrCompletedSearchableCancellable = ocrService.completedSearchable
+            .sink { [weak self] (url, shelfID) in
+                self?.manager.addFile(url: url, to: shelfID)
+            }
+
+        ocrCompletedExtractedCancellable = ocrService.completedExtracted
+            .sink { [weak self] (text, shelfID) in
+                self?.manager.addText(text, to: shelfID)
+            }
+
+        ocrFailedCancellable = ocrService.failed
+            .sink { [weak self] error in
                 guard error != .cancelled else { return }
                 self?.showConversionFailureToast(message: error.displayMessage)
             }
@@ -734,10 +756,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func makePanel(for shelfID: UUID) -> FloatingPanel<ShelfContainerView> {
         let rect = NSRect(origin: .zero, size: collapsedSize)
         let isEphemeral = ephemeralShelfIDs.contains(shelfID)
-        return FloatingPanel(contentRect: rect) { [weak self, manager, conversionService] in
+        return FloatingPanel(contentRect: rect) { [weak self, manager, conversionService, ocrService] in
             ShelfContainerView(
                 manager: manager,
                 conversionService: conversionService,
+                ocrService: ocrService,
                 shelfID: shelfID,
                 isEphemeral: isEphemeral,
                 onClose: { self?.hidePanel(for: shelfID) },
@@ -1167,6 +1190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         conversionService.cancelAll()
+        ocrService.cancelAll()
     }
 
     // MARK: - Paste shortcut
