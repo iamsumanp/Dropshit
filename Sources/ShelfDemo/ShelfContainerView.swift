@@ -2,9 +2,9 @@ import CryptoKit
 import QuickLookThumbnailing
 import SwiftUI
 
-// MARK: - Conversion progress overlay
+// MARK: - Progress overlay (conversion & OCR)
 
-private struct ConversionOverlay: View {
+private struct ProgressOverlay: View {
     let progress: Double?
     let onCancel: () -> Void
 
@@ -38,6 +38,8 @@ private struct ConversionOverlay: View {
 struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
     var conversionService: ConversionService
+    /// Placeholder until Task 10 threads the real OCRService through App.swift.
+    @StateObject private var ocrService = OCRService()
     let shelfID: UUID
     /// True for shake-created shelves, which auto-close via the shake-release
     /// watcher and shouldn't show an X in their fresh-empty state. Menu-created
@@ -151,6 +153,7 @@ struct ShelfContainerView: View {
             manager.setDropTargeted(shelfID: shelfID, false)
         }
         .environmentObject(conversionService)
+        .environmentObject(ocrService)
     }
 
     private func handleDrop(_ pasteboard: NSPasteboard) -> Bool {
@@ -310,6 +313,7 @@ private struct ExpandedShelfView: View {
     @AppStorage("shelf.viewMode") private var viewModeRaw: String = ShelfViewMode.grid.rawValue
     @State private var draggingIDs: Set<UUID> = []
     @EnvironmentObject private var conversionService: ConversionService
+    @EnvironmentObject private var ocrService: OCRService
 
     // Folder navigation: empty stack = shelf root (showing ShelfItems);
     // non-empty stack's `last` is the currently-displayed folder, with its
@@ -680,6 +684,7 @@ private struct ExpandedShelfView: View {
                 .matchedGeometryEffect(id: ShelfMatchedGeometry.card, in: namespace)
         )
         .environmentObject(conversionService)
+        .environmentObject(ocrService)
     }
 
     private var shelfList: some View {
@@ -742,6 +747,7 @@ private struct ExpandedShelfView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environmentObject(conversionService)
+        .environmentObject(ocrService)
     }
 
     private var folderGrid: some View {
@@ -1299,6 +1305,7 @@ private struct DocumentGridItem: View {
     let onNavigateInto: () -> Void
 
     @EnvironmentObject var conversionService: ConversionService
+    @EnvironmentObject var ocrService: OCRService
     @State private var hovering = false
 
     private static let defaultCardSize = CGSize(width: 78, height: 100)
@@ -1365,9 +1372,13 @@ private struct DocumentGridItem: View {
                 }
             }
             .overlay {
-                ConversionOverlay(
-                    progress: conversionService.progress[item.id],
-                    onCancel: { conversionService.cancel(itemID: item.id) }
+                ProgressOverlay(
+                    progress: ocrService.progress[item.id]
+                        ?? conversionService.progress[item.id],
+                    onCancel: {
+                        ocrService.cancel(itemID: item.id)
+                        conversionService.cancel(itemID: item.id)
+                    }
                 )
             }
             .animation(.spring(response: 0.32, dampingFraction: 0.72), value: hovering)
@@ -1566,6 +1577,7 @@ private struct DocumentListItem: View {
     let onNavigateInto: () -> Void
 
     @EnvironmentObject var conversionService: ConversionService
+    @EnvironmentObject var ocrService: OCRService
     @State private var hovering = false
 
     var body: some View {
@@ -1626,9 +1638,13 @@ private struct DocumentListItem: View {
             )
         )
         .overlay {
-            ConversionOverlay(
-                progress: conversionService.progress[item.id],
-                onCancel: { conversionService.cancel(itemID: item.id) }
+            ProgressOverlay(
+                progress: ocrService.progress[item.id]
+                    ?? conversionService.progress[item.id],
+                onCancel: {
+                    ocrService.cancel(itemID: item.id)
+                    conversionService.cancel(itemID: item.id)
+                }
             )
         }
         .onHover { hovering = $0 }
