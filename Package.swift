@@ -13,5 +13,10 @@ let package = Package(
             // quiet and avoids embedding it in the SPM module's bundle.
             exclude: ["Resources/AppIcon.icns"]
         ),
+        .testTarget(
+            name: "ShelfDemoTests",
+            dependencies: ["ShelfDemo"],
+            path: "Tests/ShelfDemoTests"
+        ),
     ]
 )
