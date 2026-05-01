@@ -637,6 +637,23 @@ private struct ExpandedShelfView: View {
                             }
                             return item.fileURL.map { [$0] } ?? []
                         },
+                        contextMenuBuilder: {
+                            let selectedIDs = sel.wrappedValue
+                            let selectedShelfItems: [ShelfItem]
+                            if selectedIDs.contains(item.id), selectedIDs.count > 1 {
+                                selectedShelfItems = manager.items(of: target)
+                                    .filter { selectedIDs.contains($0.id) }
+                            } else {
+                                selectedShelfItems = [item]
+                            }
+                            return ShelfContextMenu.make(
+                                for: item,
+                                selectedItems: selectedShelfItems,
+                                shelfID: target,
+                                manager: manager,
+                                conversionService: conversionService
+                            )
+                        },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
                         onClick: { modifiers in handleClick(itemID: item.id, modifiers: modifiers) },
                         onDragStart: {
@@ -685,6 +702,23 @@ private struct ExpandedShelfView: View {
                                     .compactMap { $0.fileURL }
                             }
                             return item.fileURL.map { [$0] } ?? []
+                        },
+                        contextMenuBuilder: {
+                            let selectedIDs = sel.wrappedValue
+                            let selectedShelfItems: [ShelfItem]
+                            if selectedIDs.contains(item.id), selectedIDs.count > 1 {
+                                selectedShelfItems = manager.items(of: target)
+                                    .filter { selectedIDs.contains($0.id) }
+                            } else {
+                                selectedShelfItems = [item]
+                            }
+                            return ShelfContextMenu.make(
+                                for: item,
+                                selectedItems: selectedShelfItems,
+                                shelfID: target,
+                                manager: manager,
+                                conversionService: conversionService
+                            )
                         },
                         onRemove: { manager.removeItem(id: item.id, from: target) },
                         onClick: { modifiers in handleClick(itemID: item.id, modifiers: modifiers) },
@@ -1252,6 +1286,7 @@ private struct DocumentGridItem: View {
     let isSelected: Bool
     let isBeingDragged: Bool
     let selectedURLsProvider: () -> [URL]
+    let contextMenuBuilder: () -> NSMenu
     let onRemove: () -> Void
     let onClick: (NSEvent.ModifierFlags) -> Void
     let onDragStart: () -> Void
@@ -1305,9 +1340,7 @@ private struct DocumentGridItem: View {
                     provider: selectedURLsProvider,
                     onStart: onDragStart,
                     onEnd: onDragEnd,
-                    menuBuilder: {
-                        ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: conversionService)
-                    },
+                    menuBuilder: contextMenuBuilder,
                     onClick: onClick,
                     onDoubleClick: {
                         if let url = item.fileURL {
@@ -1523,6 +1556,7 @@ private struct DocumentListItem: View {
     let isSelected: Bool
     let isBeingDragged: Bool
     let selectedURLsProvider: () -> [URL]
+    let contextMenuBuilder: () -> NSMenu
     let onRemove: () -> Void
     let onClick: (NSEvent.ModifierFlags) -> Void
     let onDragStart: () -> Void
@@ -1580,9 +1614,7 @@ private struct DocumentListItem: View {
                 provider: selectedURLsProvider,
                 onStart: onDragStart,
                 onEnd: onDragEnd,
-                menuBuilder: {
-                    ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: conversionService)
-                },
+                menuBuilder: contextMenuBuilder,
                 onClick: onClick,
                 onDoubleClick: {
                     if let url = item.fileURL {

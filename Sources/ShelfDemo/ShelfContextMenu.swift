@@ -5,17 +5,21 @@ import AppKit
 @MainActor
 final class ShelfItemActions: NSObject {
     let item: ShelfItem
+    let selectedItems: [ShelfItem]   // includes `item` when present in selection;
+                                     // [item] for non-selection right-clicks
     let shelfID: UUID
     weak var manager: ShelfManager?
     weak var conversionService: ConversionService?
 
     init(
         item: ShelfItem,
+        selectedItems: [ShelfItem],
         shelfID: UUID,
         manager: ShelfManager?,
         conversionService: ConversionService?
     ) {
         self.item = item
+        self.selectedItems = selectedItems
         self.shelfID = shelfID
         self.manager = manager
         self.conversionService = conversionService
@@ -173,13 +177,19 @@ final class ShelfItemActions: NSObject {
 
     @objc func convertTo(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? ConversionTarget else { return }
-        guard let url = item.fileURL else { return }
-        conversionService?.enqueue(
-            sourceItemID: item.id,
-            shelfID: shelfID,
-            source: url,
-            target: target
-        )
+        guard let service = conversionService else { return }
+        for it in selectedItems {
+            guard let url = it.fileURL else { continue }
+            // Skip items already converting — re-enqueue would just queue
+            // a redundant task at the back of the line.
+            guard service.progress[it.id] == nil else { continue }
+            service.enqueue(
+                sourceItemID: it.id,
+                shelfID: shelfID,
+                source: url,
+                target: target
+            )
+        }
     }
 
     @objc func compressImage() {
@@ -232,6 +242,7 @@ enum ShelfContextMenu {
     @MainActor
     static func make(
         for item: ShelfItem,
+        selectedItems: [ShelfItem],
         shelfID: UUID,
         manager: ShelfManager?,
         conversionService: ConversionService?
@@ -239,6 +250,7 @@ enum ShelfContextMenu {
         let menu = ShelfMenu()
         let actions = ShelfItemActions(
             item: item,
+            selectedItems: selectedItems,
             shelfID: shelfID,
             manager: manager,
             conversionService: conversionService
@@ -390,12 +402,15 @@ enum ShelfContextMenu {
         let menu = NSMenu()
 
         if let submenu = ConversionMenu.makeSubmenu(
-            items: [actions.item],
+            items: actions.selectedItems,
             target: actions,
             action: #selector(ShelfItemActions.convertTo(_:))
         ) {
+            let title = actions.selectedItems.count > 1
+                ? "Convert \(actions.selectedItems.count) Items to"
+                : "Convert to"
             let entry = NSMenuItem(
-                title: "Convert to",
+                title: title,
                 action: nil,
                 keyEquivalent: ""
             )
