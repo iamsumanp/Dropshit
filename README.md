@@ -23,6 +23,8 @@ Dropover is a great paid app. Dropshit is the same idea, written from scratch as
 - Drag preview matches the rendered card (image thumbnail, text preview, or doc card) instead of a generic file icon.
 - Aspect-ratio-aware cards: a landscape photo shows wide-and-short, a portrait shows tall-and-narrow — both uncropped.
 - File metadata in-line: dimensions for images (RAW/CR2/HEIC included), page count for PDFs, size for everything.
+- **Convert to ▶** in the right-click menu — image interop (HEIC ↔ JPEG/PNG, PNG/TIFF/WebP → JPEG/PNG, JPEG → PNG) via ImageIO, video → MP4 (MOV/M4V plus best-effort MKV/AVI) via AVFoundation. Pass-through remux when the source is already H.264/AAC. Multi-select converts in batch; a small spinner / progress bar overlays the source card while a video is encoding, with ✕ to cancel.
+- **Keep Mac Awake** at the top of the menubar menu, plus an **Activate for ▶** submenu (5/10/15/20 min, 1/2/3/5 hr, indefinitely). Backed by an IOKit power assertion — blocks idle display sleep, idle system sleep, and the screen saver (does not override lid-close, same as Caffeine). Status icon fills solid with a knockout corner pip while it's on.
 - **Pasted text snippets** are real openable files: double-click opens in TextEdit, Show in Finder reveals them.
 - **AppKit-level drop target** — no green "+" copy badge on the cursor while dragging onto a shelf.
 - **Newest-first** ordering in the expanded grid/list so the just-dropped tile is right where you're looking.
@@ -71,34 +73,12 @@ bash scripts/build-dmg.sh
 Cutting a new release after a build:
 
 ```sh
-gh release create v1.1 Dropshit.dmg \
-  --title "Dropshit v1.1" \
+gh release create v1.2 Dropshit.dmg \
+  --title "Dropshit v1.2" \
   --notes "What changed in this release…"
 ```
 
 `scripts/build-dmg.sh` regenerates the app icon (`scripts/make-icon.swift`), builds in release mode, ad-hoc signs, and packages a DMG with an `/Applications` symlink for drag-install.
-
-## Project layout
-
-```
-Sources/ShelfDemo/
-  App.swift                 NSApplicationDelegate, status item, panel lifecycle
-  ShelfManager.swift        @MainActor store: shelves, items, persistence
-  ShelfStore.swift          On-disk format (security-scoped bookmarks)
-  Shelf.swift, ShelfItem.swift   Models
-  FloatingPanel.swift       Non-activating NSPanel + vibrant blur backdrop
-  ShelfContainerView.swift  Top-level SwiftUI view (collapsed / expanded / docked)
-  CollapsedShelfView.swift  Stacked-card preview, drop target, X close
-  ShelfDragSource.swift     NSDraggingSource overlay; file-promise + file-URL drag
-  ShelfActionMenu.swift     Right-click and chevron action menu
-  ShakeDetector.swift       Global drag-shake recognizer
-  QuickLookController.swift Space-to-preview routing for QLPreviewPanel
-  …
-
-scripts/
-  build-dmg.sh              Build → sign → DMG
-  make-icon.swift           Renders the .iconset (16→1024) for AppIcon.icns
-```
 
 ## Permissions
 
