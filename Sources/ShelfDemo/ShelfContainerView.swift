@@ -1267,7 +1267,7 @@ private struct DocumentGridItem: View {
                     onStart: onDragStart,
                     onEnd: onDragEnd,
                     menuBuilder: {
-                        ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager)
+                        ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: nil)
                     },
                     onClick: onClick,
                     onDoubleClick: {
@@ -1535,7 +1535,7 @@ private struct DocumentListItem: View {
                 onStart: onDragStart,
                 onEnd: onDragEnd,
                 menuBuilder: {
-                    ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager)
+                    ShelfContextMenu.make(for: item, shelfID: shelfID, manager: manager, conversionService: nil)
                 },
                 onClick: onClick,
                 onDoubleClick: {

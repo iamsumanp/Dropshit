@@ -7,11 +7,18 @@ final class ShelfItemActions: NSObject {
     let item: ShelfItem
     let shelfID: UUID
     weak var manager: ShelfManager?
+    weak var conversionService: ConversionService?
 
-    init(item: ShelfItem, shelfID: UUID, manager: ShelfManager?) {
+    init(
+        item: ShelfItem,
+        shelfID: UUID,
+        manager: ShelfManager?,
+        conversionService: ConversionService?
+    ) {
         self.item = item
         self.shelfID = shelfID
         self.manager = manager
+        self.conversionService = conversionService
     }
 
     @objc func openWith(_ sender: NSMenuItem) {
@@ -164,10 +171,15 @@ final class ShelfItemActions: NSObject {
         runImageAction { ImageActions.resize(url: url, maxDimension: max) }
     }
 
-    @objc func convertFormat() {
+    @objc func convertTo(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ConversionTarget else { return }
         guard let url = item.fileURL else { return }
-        guard let format = ImageActionPrompts.format() else { return }
-        runImageAction { ImageActions.convert(url: url, to: format) }
+        conversionService?.enqueue(
+            sourceItemID: item.id,
+            shelfID: shelfID,
+            source: url,
+            target: target
+        )
     }
 
     @objc func compressImage() {
@@ -218,9 +230,19 @@ final class ShelfMenu: NSMenu {
 
 enum ShelfContextMenu {
     @MainActor
-    static func make(for item: ShelfItem, shelfID: UUID, manager: ShelfManager?) -> NSMenu {
+    static func make(
+        for item: ShelfItem,
+        shelfID: UUID,
+        manager: ShelfManager?,
+        conversionService: ConversionService?
+    ) -> NSMenu {
         let menu = ShelfMenu()
-        let actions = ShelfItemActions(item: item, shelfID: shelfID, manager: manager)
+        let actions = ShelfItemActions(
+            item: item,
+            shelfID: shelfID,
+            manager: manager,
+            conversionService: conversionService
+        )
         menu.actions = actions
         let hasFile = item.fileURL != nil
 
@@ -367,16 +389,30 @@ enum ShelfContextMenu {
     ) -> NSMenu {
         let menu = NSMenu()
 
+        if let submenu = ConversionMenu.makeSubmenu(
+            items: [actions.item],
+            target: actions,
+            action: #selector(ShelfItemActions.convertTo(_:))
+        ) {
+            let entry = NSMenuItem(
+                title: "Convert to",
+                action: nil,
+                keyEquivalent: ""
+            )
+            entry.image = NSImage(
+                systemSymbolName: "arrow.triangle.2.circlepath",
+                accessibilityDescription: nil
+            )
+            entry.submenu = submenu
+            menu.addItem(entry)
+        }
+
         if isImage {
             menu.addItem(sectionHeader("Image Actions"))
 
             addItem(to: menu, title: "Resize…",
                     selector: #selector(ShelfItemActions.resizeImage),
                     symbol: "arrow.down.right.and.arrow.up.left",
-                    target: actions)
-            addItem(to: menu, title: "Convert Format…",
-                    selector: #selector(ShelfItemActions.convertFormat),
-                    symbol: "arrow.triangle.2.circlepath",
                     target: actions)
             addItem(to: menu, title: "Compress…",
                     selector: #selector(ShelfItemActions.compressImage),

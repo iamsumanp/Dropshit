@@ -3,31 +3,6 @@ import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
 
-enum ImageActionFormat: String, CaseIterable {
-    case png = "PNG"
-    case jpeg = "JPEG"
-    case heic = "HEIC"
-    case tiff = "TIFF"
-
-    var utType: CFString {
-        switch self {
-        case .png: return UTType.png.identifier as CFString
-        case .jpeg: return UTType.jpeg.identifier as CFString
-        case .heic: return UTType.heic.identifier as CFString
-        case .tiff: return UTType.tiff.identifier as CFString
-        }
-    }
-
-    var fileExtension: String {
-        switch self {
-        case .png: return "png"
-        case .jpeg: return "jpg"
-        case .heic: return "heic"
-        case .tiff: return "tiff"
-        }
-    }
-}
-
 enum ImageActions {
     @discardableResult
     static func resize(url: URL, maxDimension: CGFloat) -> URL? {
@@ -42,21 +17,6 @@ enum ImageActions {
         let type = CGImageSourceGetType(source) ?? (UTType.png.identifier as CFString)
         let dest = uniqueURL(basedOn: url, suffix: " (resized)")
         return write(image: image, to: dest, type: type, properties: nil)
-    }
-
-    @discardableResult
-    static func convert(url: URL, to format: ImageActionFormat) -> URL? {
-        guard
-            let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-            let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
-        else { return nil }
-
-        let stem = url.deletingPathExtension().lastPathComponent
-        let candidate = url.deletingLastPathComponent()
-            .appendingPathComponent(stem)
-            .appendingPathExtension(format.fileExtension)
-        let dest = uniqueURL(at: candidate)
-        return write(image: image, to: dest, type: format.utType, properties: nil)
     }
 
     @discardableResult
@@ -164,24 +124,6 @@ enum ImageActionPrompts {
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         guard let value = Double(field.stringValue), value > 0 else { return nil }
         return CGFloat(value)
-    }
-
-    static func format() -> ImageActionFormat? {
-        let alert = NSAlert()
-        alert.messageText = "Convert Format"
-        alert.informativeText = "Choose an output format."
-        let popup = NSPopUpButton(
-            frame: NSRect(x: 0, y: 0, width: 220, height: 26),
-            pullsDown: false
-        )
-        for format in ImageActionFormat.allCases {
-            popup.addItem(withTitle: format.rawValue)
-        }
-        alert.accessoryView = popup
-        alert.addButton(withTitle: "Convert")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return ImageActionFormat.allCases[popup.indexOfSelectedItem]
     }
 
     static func compressionQuality(defaultValue: Double = 0.75) -> Double? {
