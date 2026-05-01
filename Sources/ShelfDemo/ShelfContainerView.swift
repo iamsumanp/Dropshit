@@ -2,6 +2,39 @@ import CryptoKit
 import QuickLookThumbnailing
 import SwiftUI
 
+// MARK: - Conversion progress overlay
+
+private struct ConversionOverlay: View {
+    let progress: Double?
+    let onCancel: () -> Void
+
+    var body: some View {
+        if let progress {
+            ZStack {
+                Color.black.opacity(0.45)
+                    .allowsHitTesting(false)
+                VStack(spacing: 6) {
+                    ProgressView(value: progress, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .frame(width: 76)
+                        .tint(.white)
+                    Button {
+                        onCancel()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(8)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .transition(.opacity)
+        }
+    }
+}
+
 struct ShelfContainerView: View {
     @ObservedObject var manager: ShelfManager
     let shelfID: UUID
@@ -274,6 +307,8 @@ private struct ExpandedShelfView: View {
 
     @AppStorage("shelf.viewMode") private var viewModeRaw: String = ShelfViewMode.grid.rawValue
     @State private var draggingIDs: Set<UUID> = []
+    // task 11 replaces this with the real injected service from AppDelegate
+    @StateObject private var conversionService = ConversionService()
 
     // Folder navigation: empty stack = shelf root (showing ShelfItems);
     // non-empty stack's `last` is the currently-displayed folder, with its
@@ -625,6 +660,7 @@ private struct ExpandedShelfView: View {
                 .fill(Color.clear)
                 .matchedGeometryEffect(id: ShelfMatchedGeometry.card, in: namespace)
         )
+        .environmentObject(conversionService)
     }
 
     private var shelfList: some View {
@@ -668,6 +704,7 @@ private struct ExpandedShelfView: View {
             .padding(.vertical, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environmentObject(conversionService)
     }
 
     private var folderGrid: some View {
@@ -1223,6 +1260,7 @@ private struct DocumentGridItem: View {
     /// only navigation affordance.
     let onNavigateInto: () -> Void
 
+    @EnvironmentObject var conversionService: ConversionService
     @State private var hovering = false
 
     private static let defaultCardSize = CGSize(width: 78, height: 100)
@@ -1289,6 +1327,12 @@ private struct DocumentGridItem: View {
                     .buttonStyle(.plain)
                     .offset(x: 6, y: -6)
                 }
+            }
+            .overlay {
+                ConversionOverlay(
+                    progress: conversionService.progress[item.id],
+                    onCancel: { conversionService.cancel(itemID: item.id) }
+                )
             }
             .animation(.spring(response: 0.32, dampingFraction: 0.72), value: hovering)
             .onHover { hovering = $0 }
@@ -1484,6 +1528,7 @@ private struct DocumentListItem: View {
     let onDragEnd: () -> Void
     let onNavigateInto: () -> Void
 
+    @EnvironmentObject var conversionService: ConversionService
     @State private var hovering = false
 
     var body: some View {
@@ -1545,6 +1590,12 @@ private struct DocumentListItem: View {
                 }
             )
         )
+        .overlay {
+            ConversionOverlay(
+                progress: conversionService.progress[item.id],
+                onCancel: { conversionService.cancel(itemID: item.id) }
+            )
+        }
         .onHover { hovering = $0 }
         .opacity(isBeingDragged ? 0 : 1)
         .animation(.easeOut(duration: 0.15), value: isBeingDragged)
