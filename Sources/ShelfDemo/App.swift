@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import IOKit.pwr_mgt
 import SwiftUI
 
 @main
@@ -55,6 +56,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItemIconCancellable: AnyCancellable?
 
+    // Caffeine-style "Keep Mac Awake" — holds an IOKit power assertion that
+    // blocks user-idle display sleep (which also blocks idle system sleep
+    // and screen-saver activation as a side effect).
+    private var keepAwakeAssertion: IOPMAssertionID = 0
+    private var isKeepAwake: Bool = false
+    // nil while indefinite or off; the original duration (in seconds) when
+    // a timed activation is in flight, used both for the auto-off timer and
+    // to checkmark the right item under "Activate for".
+    private var keepAwakeDuration: TimeInterval?
+    private var keepAwakeTimer: Timer?
+    private var dropTargetActive: Bool = false
+
     // Auto-park (top-right stack) state — populated only when the
     // "shelf.autoParkTopRight" preference is on. We track per-shelf item
     // counts so we only park on the 0→non-empty transition (the first drop
@@ -71,23 +84,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // without needing to install/uninstall the monitor.
     private var outsideClickMonitor: Any?
 
-    private func applyStatusIcon(dropping: Bool) {
+    private func applyStatusIcon(dropping: Bool? = nil, awake: Bool? = nil) {
+        if let dropping { dropTargetActive = dropping }
+        if let awake { isKeepAwake = awake }
         guard let button = statusItem?.button else { return }
+        let isDropping = dropTargetActive
+        let isAwake = isKeepAwake
         // Custom-drawn glyph: rounded-square outline with the dot fully
         // inside the frame at the top-right (the SF `app.badge` symbol
         // parks the dot at the corner so it pokes out of the outline).
+        // When keep-awake is on, the body fills solid and the corner dot
+        // becomes a knockout so the icon clearly reads as "active".
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
-            let outline = NSBezierPath(
-                roundedRect: rect.insetBy(dx: 1.75, dy: 1.75),
-                xRadius: 4,
-                yRadius: 4
-            )
-            outline.lineWidth = 1.6
-            NSColor.black.setStroke()
-            outline.stroke()
+            let bodyRect = rect.insetBy(dx: 1.75, dy: 1.75)
+            let body = NSBezierPath(roundedRect: bodyRect, xRadius: 4, yRadius: 4)
+            if isAwake {
+                NSColor.black.setFill()
+                body.fill()
+            } else {
+                body.lineWidth = 1.6
+                NSColor.black.setStroke()
+                body.stroke()
+            }
 
             // Slightly larger dot when a drop is active for visual emphasis.
-            let dotSize: CGFloat = dropping ? 5 : 4
+            let dotSize: CGFloat = isDropping ? 5 : 4
             let inset: CGFloat = 3.5
             let dotRect = NSRect(
                 x: rect.maxX - inset - dotSize,
@@ -95,8 +116,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 width: dotSize,
                 height: dotSize
             )
-            NSColor.black.setFill()
-            NSBezierPath(ovalIn: dotRect).fill()
+            let dotPath = NSBezierPath(ovalIn: dotRect)
+            if isAwake {
+                // Punch the corner dot out of the filled body so the awake
+                // state still has a recognizable top-right pip silhouette.
+                NSGraphicsContext.current?.compositingOperation = .clear
+                dotPath.fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+            } else {
+                NSColor.black.setFill()
+                dotPath.fill()
+            }
             return true
         }
         image.isTemplate = true
@@ -241,6 +271,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rebuildStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        let keepAwake = NSMenuItem(
+            title: "Keep Mac Awake",
+            action: #selector(toggleKeepAwakeAction),
+            keyEquivalent: ""
+        )
+        keepAwake.target = self
+        keepAwake.state = isKeepAwake ? .on : .off
+        menu.addItem(keepAwake)
+
+        let activateFor = NSMenuItem(title: "Activate for", action: nil, keyEquivalent: "")
+        activateFor.submenu = buildKeepAwakeDurationsMenu()
+        menu.addItem(activateFor)
+
+        menu.addItem(.separator())
+
         let newShelf = NSMenuItem(
             title: "New Shelf",
             action: #selector(newShelfAction),
@@ -279,6 +324,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             keyEquivalent: "q"
         )
         menu.addItem(quit)
+    }
+
+    @objc private func toggleKeepAwakeAction() {
+        setKeepAwake(!isKeepAwake)
+    }
+
+    @objc private func keepAwakeForAction(_ sender: NSMenuItem) {
+        // representedObject carries the duration in seconds; nil = indefinite.
+        let duration = sender.representedObject as? TimeInterval
+        setKeepAwake(true, duration: duration)
+    }
+
+    /// Holds (or releases) an IOKit power-management assertion that prevents
+    /// idle display sleep — which transitively blocks idle system sleep and
+    /// the screen saver, matching Caffeine's behavior. When `duration` is
+    /// non-nil, schedules an auto-off timer for that many seconds.
+    private func setKeepAwake(_ enabled: Bool, duration: TimeInterval? = nil) {
+        keepAwakeTimer?.invalidate()
+        keepAwakeTimer = nil
+
+        if enabled {
+            if !isKeepAwake {
+                var assertion: IOPMAssertionID = 0
+                let result = IOPMAssertionCreateWithName(
+                    kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                    IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                    "Dropshit keep-awake" as CFString,
+                    &assertion
+                )
+                guard result == kIOReturnSuccess else { return }
+                keepAwakeAssertion = assertion
+                applyStatusIcon(awake: true)
+            }
+            keepAwakeDuration = duration
+            if let duration {
+                keepAwakeTimer = Timer.scheduledTimer(
+                    withTimeInterval: duration, repeats: false
+                ) { [weak self] _ in
+                    Task { @MainActor in self?.setKeepAwake(false) }
+                }
+            }
+        } else if isKeepAwake {
+            IOPMAssertionRelease(keepAwakeAssertion)
+            keepAwakeAssertion = 0
+            keepAwakeDuration = nil
+            applyStatusIcon(awake: false)
+        }
+    }
+
+    private func buildKeepAwakeDurationsMenu() -> NSMenu {
+        let submenu = NSMenu()
+        // (title, duration in seconds; nil = indefinite)
+        let options: [(String, TimeInterval?)] = [
+            ("Indefinitely", nil),
+            ("5 minutes",  5 * 60),
+            ("10 minutes", 10 * 60),
+            ("15 minutes", 15 * 60),
+            ("20 minutes", 20 * 60),
+            ("1 hour",     60 * 60),
+            ("2 hours",    2 * 60 * 60),
+            ("3 hours",    3 * 60 * 60),
+            ("5 hours",    5 * 60 * 60),
+        ]
+        for (title, duration) in options {
+            let item = NSMenuItem(
+                title: title,
+                action: #selector(keepAwakeForAction(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = duration
+            // Tick the row that matches the current state. "Indefinitely"
+            // matches when keep-awake is on with no auto-off timer.
+            if isKeepAwake, duration == keepAwakeDuration {
+                item.state = .on
+            }
+            submenu.addItem(item)
+        }
+        return submenu
     }
 
     @objc private func openSettingsAction() {
@@ -709,16 +833,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func parkShelf(id: UUID) {
-        guard let panel = panels[id] else { return }
+        guard panels[id] != nil else { return }
         parkedShelfIDs.insert(id)
-        parkedShelfOrder.append(id)
-        let frame = parkedFrame(for: id, on: panel.screen)
+        // Newest-parked shelf goes on top; existing shelves slide down a slot
+        // so the just-dropped panel always lands at the top-right corner.
+        parkedShelfOrder.insert(id, at: 0)
         // Tiny pause so the just-dropped item visibly lands before the
         // panel starts gliding away — but short enough that it doesn't look
         // like the panel got stuck at the drop location.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self, let panel = self.panels[id] else { return }
-            self.animateParked(panel: panel, to: frame)
+            self?.relayoutParkedShelves()
         }
     }
 
