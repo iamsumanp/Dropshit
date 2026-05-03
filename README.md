@@ -4,6 +4,9 @@ A free, open-source macOS shelf for files. Drag stuff in, drop it out wherever y
 
 It's an exact clone of [Dropover](https://dropoverapp.com/) — same shake-to-summon shelf, same drop-anywhere-to-collect workflow, same drag-out-to-deliver behavior — except free.
 
+<img width="730" height="572" alt="Image2026-05-04 at 00 07 52@2x" src="https://github.com/user-attachments/assets/328a8574-0c14-4f75-9814-df07415fe675" />
+
+
 ## Why
 
 Dropover is a great paid app. Dropshit is the same idea, written from scratch as a single SwiftPM target, free under the MIT license. If Dropover does what you need and you want to support its author, buy Dropover. If you want a free tool that does the same thing without a license server, this is it.
