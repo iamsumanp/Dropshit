@@ -354,7 +354,9 @@ private struct ExpandedShelfView: View {
     }
 
     private var countTitle: String {
-        items.count == 1 ? "1 File" : "\(items.count) Files"
+        items.count == 1
+            ? L("1 File")
+            : String(format: L("%lld Files"), items.count)
     }
 
     private var headerPrimary: String {
@@ -365,15 +367,17 @@ private struct ExpandedShelfView: View {
 
     private var headerSubtitle: String {
         if inFolder {
-            let shelfTitle = (shelf?.name?.isEmpty == false ? shelf?.name : nil) ?? "Shelf"
+            let shelfTitle = (shelf?.name?.isEmpty == false ? shelf?.name : nil) ?? L("shelf.default-name")
             let parents = folderStack.dropLast().map(\.lastPathComponent)
             let crumbs = ([shelfTitle] + parents).joined(separator: " › ")
             let countLabel: String
             if isCurrentFolderLoading {
-                countLabel = "loading…"
+                countLabel = L("Loading…")
             } else {
                 let n = currentEntries.count
-                countLabel = n == 1 ? "1 item" : "\(n) items"
+                countLabel = n == 1
+                    ? L("1 file")
+                    : String(format: L("%lld files"), n)
             }
             return "\(crumbs) · \(countLabel)"
         }
@@ -530,7 +534,7 @@ private struct ExpandedShelfView: View {
         if isCurrentFolderLoading {
             VStack(spacing: 10) {
                 ProgressView().progressViewStyle(.circular)
-                Text("Loading…")
+                Text(L("Loading…"))
                     .font(.system(size: 11))
                     .foregroundStyle(Color.white.opacity(0.55))
             }
@@ -540,7 +544,7 @@ private struct ExpandedShelfView: View {
                 Image(systemName: "tray")
                     .font(.system(size: 22, weight: .regular))
                     .foregroundStyle(Color.white.opacity(0.38))
-                Text("Empty folder")
+                Text(L("Empty folder"))
                     .font(.system(size: 12))
                     .foregroundStyle(Color.white.opacity(0.55))
             }
@@ -1068,11 +1072,11 @@ private struct FolderEntryGridCell: View {
     private var metaText: String {
         if entry.isDirectory {
             if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
-            return "Folder"
+            return L("Folder")
         }
         if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
         let ext = entry.url.pathExtension
-        return ext.isEmpty ? "File" : ext.uppercased()
+        return ext.isEmpty ? L("File") : ext.uppercased()
     }
 
     @ViewBuilder
@@ -1207,11 +1211,11 @@ private struct FolderEntryListItem: View {
     private var metaText: String {
         if entry.isDirectory {
             if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
-            return "Folder"
+            return L("Folder")
         }
         if let bytes = entry.byteSize { return ShelfItem.format(bytes: bytes) }
         let ext = entry.url.pathExtension
-        return ext.isEmpty ? "File" : ext.uppercased()
+        return ext.isEmpty ? L("File") : ext.uppercased()
     }
 
     @ViewBuilder
@@ -1263,7 +1267,7 @@ private struct SelectAllButton: View {
                           : "circle.dashed")
                         .font(.system(size: 11, weight: .medium))
                 }
-                Text(allSelected ? "Deselect All" : "Select All")
+                Text(allSelected ? L("Deselect All") : L("Select All"))
                     .font(.system(size: 12, weight: .medium))
             }
             .foregroundStyle(Color.white.opacity(enabled ? 0.92 : 0.4))
@@ -1752,7 +1756,7 @@ private struct RevealInFinderButton: View {
             HStack(spacing: 6) {
                 Image(systemName: "folder")
                     .font(.system(size: 11, weight: .medium))
-                Text("Reveal in Finder")
+                Text(L("Reveal in Finder"))
                     .font(.system(size: 12, weight: .medium))
             }
             .foregroundStyle(Color.white.opacity(enabled ? 0.92 : 0.4))

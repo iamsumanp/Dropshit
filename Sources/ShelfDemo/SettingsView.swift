@@ -12,11 +12,11 @@ enum ShelfExpiry: Int, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .never: return "Never"
-        case .oneDay: return "After 1 day"
-        case .sevenDays: return "After 7 days"
-        case .tenDays: return "After 10 days"
-        case .thirtyDays: return "After 30 days"
+        case .never: return L("Never")
+        case .oneDay: return L("After 1 day")
+        case .sevenDays: return L("After 7 days")
+        case .tenDays: return L("After 10 days")
+        case .thirtyDays: return L("After 30 days")
         }
     }
 }
@@ -31,13 +31,18 @@ struct SettingsView: View {
     /// stays in sync if the file is removed externally.
     @State private var launchAtLogin: Bool = LaunchAtLoginManager.isEnabled
 
+    /// Currently-applied language. Diffing against the picker selection tells
+    /// us whether to show the "Quit & Reopen" prompt.
+    @State private var appliedLanguage: AppLanguage = LanguagePreference.current
+    @State private var pickedLanguage: AppLanguage = LanguagePreference.current
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Settings")
+            Text(L("Settings"))
                 .font(.system(size: 17, weight: .semibold))
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Auto-delete shelves")
+                Text(L("Auto-delete shelves"))
                     .font(.system(size: 13, weight: .medium))
                 Picker("", selection: $expiryDays) {
                     ForEach(ShelfExpiry.allCases) { opt in
@@ -47,7 +52,7 @@ struct SettingsView: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
 
-                Text("A shelf is removed when its most recent activity is older than the chosen duration. Files dragged in from Finder are kept on disk; only files staged inside the shelf (e.g. clipboard images) are deleted. Pinned shelves are never auto-deleted regardless of this setting.")
+                Text(L("settings.expiry.description"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -56,18 +61,18 @@ struct SettingsView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("Park new shelves at the top-right corner", isOn: $autoParkTopRight)
+                Toggle(L("Park new shelves at the top-right corner"), isOn: $autoParkTopRight)
                     .toggleStyle(.switch)
-                Text("After the first item lands on a freshly-created shelf, the shelf slides up to the top-right of the screen and out of the way. New shelves stack vertically below it.")
+                Text(L("settings.park.description"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("Collapse expanded shelf when clicking outside", isOn: $closeOnOutsideClick)
+                Toggle(L("Collapse expanded shelf when clicking outside"), isOn: $closeOnOutsideClick)
                     .toggleStyle(.switch)
-                Text("When a shelf is in its expanded detail view and you click somewhere else, it folds back to the small pill. The pill stays put — collapsed shelves are unaffected.")
+                Text(L("settings.collapse.description"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -76,12 +81,48 @@ struct SettingsView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("Launch at login", isOn: Binding(
+                Text(L("Language"))
+                    .font(.system(size: 13, weight: .medium))
+                Picker("", selection: $pickedLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .onChange(of: pickedLanguage) { newValue in
+                    LanguagePreference.current = newValue
+                }
+
+                Text(L("settings.language.description"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if pickedLanguage != appliedLanguage {
+                    HStack(spacing: 8) {
+                        Text(L("Takes effect on next launch."))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button(L("Quit & Reopen")) {
+                            LanguagePreference.relaunch()
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(L("Launch at login"), isOn: Binding(
                     get: { launchAtLogin },
                     set: { newValue in applyLaunchAtLogin(newValue) }
                 ))
                 .toggleStyle(.switch)
-                Text("Starts Shelf automatically when you log in. We install a LaunchAgent in ~/Library/LaunchAgents — works for both packaged and unsigned dev builds.")
+                Text(L("settings.launch.description"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -91,6 +132,8 @@ struct SettingsView: View {
         .frame(width: 380, alignment: .leading)
         .onAppear {
             launchAtLogin = LaunchAtLoginManager.isEnabled
+            appliedLanguage = LanguagePreference.current
+            pickedLanguage = LanguagePreference.current
         }
     }
 
@@ -102,10 +145,10 @@ struct SettingsView: View {
             NSLog("Shelf: launch-at-login toggle failed — \(error)")
             launchAtLogin = LaunchAtLoginManager.isEnabled
             let alert = NSAlert()
-            alert.messageText = "Couldn't Update Login Items"
+            alert.messageText = L("Couldn't Update Login Items")
             alert.informativeText = error.localizedDescription
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: L("OK"))
             alert.runModal()
         }
     }

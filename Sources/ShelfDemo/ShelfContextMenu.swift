@@ -111,11 +111,11 @@ final class ShelfItemActions: NSObject {
     @MainActor
     private static func promptRename(current: String) -> String? {
         let alert = NSAlert()
-        alert.messageText = "Rename"
-        alert.informativeText = "Enter the new file name (extension included)."
+        alert.messageText = L("Rename")
+        alert.informativeText = L("alert.rename.body")
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Rename"))
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 22))
         field.stringValue = current
@@ -142,10 +142,10 @@ final class ShelfItemActions: NSObject {
     @MainActor
     private static func showRenameError(_ error: Error) {
         let alert = NSAlert()
-        alert.messageText = "Couldn't rename"
+        alert.messageText = L("Couldn't rename")
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L("OK"))
         alert.runModal()
     }
 
@@ -262,10 +262,10 @@ final class ShelfItemActions: NSObject {
     @MainActor
     private static func showFailureAlert() {
         let alert = NSAlert()
-        alert.messageText = "Action Failed"
-        alert.informativeText = "The image could not be processed."
+        alert.messageText = L("Action Failed")
+        alert.informativeText = L("alert.action-failed.body")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L("OK"))
         alert.runModal()
     }
 }
@@ -297,14 +297,14 @@ enum ShelfContextMenu {
         let hasFile = item.fileURL != nil
 
         // Open With
-        let openWithItem = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+        let openWithItem = NSMenuItem(title: L("Open With"), action: nil, keyEquivalent: "")
         openWithItem.submenu = makeOpenWithMenu(for: item, actions: actions)
         openWithItem.isEnabled = hasFile
         menu.addItem(openWithItem)
 
         // Show in Finder
         let show = NSMenuItem(
-            title: "Show in Finder",
+            title: L("Show in Finder"),
             action: #selector(ShelfItemActions.showInFinder),
             keyEquivalent: ""
         )
@@ -314,7 +314,7 @@ enum ShelfContextMenu {
 
         // Quick Look
         let ql = NSMenuItem(
-            title: "Quick Look",
+            title: L("Quick Look"),
             action: #selector(ShelfItemActions.quickLook),
             keyEquivalent: " "
         )
@@ -325,7 +325,7 @@ enum ShelfContextMenu {
 
         // Copy
         let copy = NSMenuItem(
-            title: "Copy",
+            title: L("Copy"),
             action: #selector(ShelfItemActions.copyToPasteboard),
             keyEquivalent: "c"
         )
@@ -334,7 +334,7 @@ enum ShelfContextMenu {
 
         // Share
         let share = NSMenuItem(
-            title: "Share…",
+            title: L("Share…"),
             action: #selector(ShelfItemActions.share),
             keyEquivalent: ""
         )
@@ -347,7 +347,7 @@ enum ShelfContextMenu {
         // missing files don't get a rename row.
         let canRename = (item.fileURL != nil) && (item.type != .text)
         let rename = NSMenuItem(
-            title: "Rename…",
+            title: L("Rename…"),
             action: #selector(ShelfItemActions.rename),
             keyEquivalent: ""
         )
@@ -359,7 +359,7 @@ enum ShelfContextMenu {
 
         // Move to Trash
         let trash = NSMenuItem(
-            title: "Move to Trash",
+            title: L("Move to Trash"),
             action: #selector(ShelfItemActions.moveToTrash),
             keyEquivalent: ""
         )
@@ -369,7 +369,7 @@ enum ShelfContextMenu {
         menu.addItem(.separator())
 
         // All Actions submenu
-        let allActions = NSMenuItem(title: "All Actions", action: nil, keyEquivalent: "")
+        let allActions = NSMenuItem(title: L("All Actions"), action: nil, keyEquivalent: "")
         allActions.submenu = makeAllActionsMenu(
             actions: actions,
             hasFile: hasFile,
@@ -384,7 +384,7 @@ enum ShelfContextMenu {
     private static func makeOpenWithMenu(for item: ShelfItem, actions: ShelfItemActions) -> NSMenu {
         let menu = NSMenu()
         guard let url = item.fileURL else {
-            let none = NSMenuItem(title: "No File", action: nil, keyEquivalent: "")
+            let none = NSMenuItem(title: L("No File"), action: nil, keyEquivalent: "")
             none.isEnabled = false
             menu.addItem(none)
             return menu
@@ -394,7 +394,7 @@ enum ShelfContextMenu {
         let allApps = NSWorkspace.shared.urlsForApplications(toOpen: url)
 
         if let defaultApp {
-            let title = appDisplayName(defaultApp) + " (default)"
+            let title = appDisplayName(defaultApp) + L("openwith.default.suffix")
             let mi = NSMenuItem(
                 title: title,
                 action: #selector(ShelfItemActions.openWith(_:)),
@@ -411,7 +411,7 @@ enum ShelfContextMenu {
             .sorted { appDisplayName($0).localizedCaseInsensitiveCompare(appDisplayName($1)) == .orderedAscending }
 
         if others.isEmpty && defaultApp == nil {
-            let none = NSMenuItem(title: "No Applications", action: nil, keyEquivalent: "")
+            let none = NSMenuItem(title: L("No Applications"), action: nil, keyEquivalent: "")
             none.isEnabled = false
             menu.addItem(none)
         } else {
@@ -445,8 +445,8 @@ enum ShelfContextMenu {
             action: #selector(ShelfItemActions.convertTo(_:))
         ) {
             let title = actions.selectedItems.count > 1
-                ? "Convert \(actions.selectedItems.count) Items to"
-                : "Convert to"
+                ? String(format: L("Convert %lld Items to"), actions.selectedItems.count)
+                : L("Convert to")
             let entry = NSMenuItem(
                 title: title,
                 action: nil,
@@ -472,31 +472,31 @@ enum ShelfContextMenu {
         }
 
         if isImage {
-            menu.addItem(sectionHeader("Image Actions"))
+            menu.addItem(sectionHeader(L("Image Actions")))
 
-            addItem(to: menu, title: "Resize…",
+            addItem(to: menu, title: L("Resize…"),
                     selector: #selector(ShelfItemActions.resizeImage),
                     symbol: "arrow.down.right.and.arrow.up.left",
                     target: actions)
-            addItem(to: menu, title: "Compress…",
+            addItem(to: menu, title: L("Compress…"),
                     selector: #selector(ShelfItemActions.compressImage),
                     symbol: "arrow.down.to.line.compact",
                     target: actions)
-            addItem(to: menu, title: "Remove Metadata",
+            addItem(to: menu, title: L("Remove Metadata"),
                     selector: #selector(ShelfItemActions.removeMetadata),
                     symbol: "tag.slash",
                     target: actions)
-            addItem(to: menu, title: "Create PDF",
+            addItem(to: menu, title: L("Create PDF"),
                     selector: #selector(ShelfItemActions.createPDF),
                     symbol: "doc.badge.plus",
                     target: actions)
 
             menu.addItem(.separator())
-            menu.addItem(sectionHeader("General Actions"))
+            menu.addItem(sectionHeader(L("General Actions")))
         }
 
         let open = NSMenuItem(
-            title: "Open",
+            title: L("Open"),
             action: #selector(ShelfItemActions.open),
             keyEquivalent: ""
         )
@@ -505,7 +505,7 @@ enum ShelfContextMenu {
         menu.addItem(open)
 
         let duplicate = NSMenuItem(
-            title: "Duplicate",
+            title: L("Duplicate"),
             action: #selector(ShelfItemActions.duplicateFile),
             keyEquivalent: ""
         )
@@ -516,7 +516,7 @@ enum ShelfContextMenu {
         menu.addItem(.separator())
 
         let remove = NSMenuItem(
-            title: "Remove from Shelf",
+            title: L("Remove from Shelf"),
             action: #selector(ShelfItemActions.removeFromShelf),
             keyEquivalent: ""
         )

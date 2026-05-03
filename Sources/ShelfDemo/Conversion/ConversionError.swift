@@ -11,15 +11,15 @@ enum ConversionError: Error, Equatable {
     var displayMessage: String {
         switch self {
         case .sourceMissing:
-            return "Conversion failed: source file no longer exists."
+            return L("conversion.error.source-missing")
         case .sourceUnreadable:
-            return "Conversion failed: could not read the source."
+            return L("conversion.error.source-unreadable")
         case .destinationUnwritable:
-            return "Conversion failed: could not write to disk."
+            return L("conversion.error.destination-unwritable")
         case .encodingFailed(let reason):
-            return "Conversion failed: \(reason)"
+            return String(format: L("conversion.error.encoding-failed"), reason)
         case .cancelled:
-            return "Conversion cancelled."
+            return L("conversion.error.cancelled")
         }
     }
 }

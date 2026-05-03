@@ -230,11 +230,11 @@ final class ShelfManager: ObservableObject {
 
         var menuTitle: String {
             switch self {
-            case .clearShelf: return "Undo Clear Shelf"
+            case .clearShelf: return L("undo.clear-shelf")
             case .moveToTrash(_, let items, _):
                 return items.count <= 1
-                    ? "Undo Move to Trash"
-                    : "Undo Move to Trash (\(items.count))"
+                    ? L("undo.move-to-trash")
+                    : String(format: L("undo.move-to-trash-count"), items.count)
             }
         }
     }
@@ -306,16 +306,16 @@ final class ShelfManager: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .itemNotFound: return "Item not found."
-            case .missingURL: return "Item has no file URL."
+            case .itemNotFound: return L("rename.error.item-not-found")
+            case .missingURL: return L("rename.error.missing-url")
             case .sourceMissing(let url):
-                return "Source no longer exists: \(url.path)"
+                return String(format: L("rename.error.source-missing"), url.path)
             case .destinationExists(let url):
-                return "A file already exists at \(url.lastPathComponent)."
+                return String(format: L("rename.error.destination-exists"), url.lastPathComponent)
             case .moveFailed(_, _, let err):
                 return err.localizedDescription
             case .moveDidNotTakeEffect:
-                return "Rename reported success but the file did not move."
+                return L("rename.error.no-effect")
             }
         }
     }
