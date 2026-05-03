@@ -1,0 +1,174 @@
+/* Settings window */
+"Settings" = "Settings";
+"Shelf Settings" = "Shelf Settings";
+"Auto-delete shelves" = "Auto-delete shelves";
+"Never" = "Never";
+"After 1 day" = "After 1 day";
+"After 7 days" = "After 7 days";
+"After 10 days" = "After 10 days";
+"After 30 days" = "After 30 days";
+"settings.expiry.description" = "A shelf is removed when its most recent activity is older than the chosen duration. Files dragged in from Finder are kept on disk; only files staged inside the shelf (e.g. clipboard images) are deleted. Pinned shelves are never auto-deleted regardless of this setting.";
+"Park new shelves at the top-right corner" = "Park new shelves at the top-right corner";
+"settings.park.description" = "After the first item lands on a freshly-created shelf, the shelf slides up to the top-right of the screen and out of the way. New shelves stack vertically below it.";
+"Collapse expanded shelf when clicking outside" = "Collapse expanded shelf when clicking outside";
+"settings.collapse.description" = "When a shelf is in its expanded detail view and you click somewhere else, it folds back to the small pill. The pill stays put — collapsed shelves are unaffected.";
+"Launch at login" = "Launch at login";
+"settings.launch.description" = "Starts Shelf automatically when you log in. We install a LaunchAgent in ~/Library/LaunchAgents — works for both packaged and unsigned dev builds.";
+"Couldn't Update Login Items" = "Couldn't Update Login Items";
+
+/* Language picker */
+"Language" = "Language";
+"language.system" = "System Default";
+"settings.language.description" = "Overrides the macOS system language for this app only.";
+"Takes effect on next launch." = "Takes effect on next launch.";
+"Quit & Reopen" = "Quit & Reopen";
+
+/* Status-bar menu */
+"Keep Mac Awake" = "Keep Mac Awake";
+"Activate for" = "Activate for";
+"Indefinitely" = "Indefinitely";
+"5 minutes" = "5 minutes";
+"10 minutes" = "10 minutes";
+"15 minutes" = "15 minutes";
+"20 minutes" = "20 minutes";
+"1 hour" = "1 hour";
+"2 hours" = "2 hours";
+"3 hours" = "3 hours";
+"5 hours" = "5 hours";
+"New Shelf" = "New Shelf";
+"New Shelf From Clipboard" = "New Shelf From Clipboard";
+"Recent Shelves" = "Recent Shelves";
+"No Recent Shelves" = "No Recent Shelves";
+"Clear Recent Shelves" = "Clear Recent Shelves";
+"Settings…" = "Settings…";
+"Quit" = "Quit";
+
+/* Shelf action menu */
+"Open With" = "Open With";
+"Show in Finder" = "Show in Finder";
+"Quick Look" = "Quick Look";
+"AirDrop" = "AirDrop";
+"Messages" = "Messages";
+"Add From Clipboard" = "Add From Clipboard";
+"Copy" = "Copy";
+"Copy %lld Files" = "Copy %lld Files";
+"All Actions" = "All Actions";
+"Shelf" = "Shelf";
+"Undo" = "Undo";
+"Clear Shelf" = "Clear Shelf";
+"Rename Shelf…" = "Rename Shelf…";
+"Name Shelf…" = "Name Shelf…";
+"Pin Shelf" = "Pin Shelf";
+"Unpin Shelf" = "Unpin Shelf";
+"Accent" = "Accent";
+"None" = "None";
+"Red" = "Red";
+"Orange" = "Orange";
+"Yellow" = "Yellow";
+"Green" = "Green";
+"Blue" = "Blue";
+"Purple" = "Purple";
+"Pick Emoji…" = "Pick Emoji…";
+"Get Info" = "Get Info";
+"Batch Rename…" = "Batch Rename…";
+"Create ZIP Archive…" = "Create ZIP Archive…";
+"Copy Path" = "Copy Path";
+"Move to Trash" = "Move to Trash";
+"No Applications" = "No Applications";
+"openwith.default.suffix" = " (default)";
+
+/* Item context menu */
+"Share…" = "Share…";
+"Rename…" = "Rename…";
+"Open" = "Open";
+"Duplicate" = "Duplicate";
+"Remove from Shelf" = "Remove from Shelf";
+"No File" = "No File";
+"Convert to" = "Convert to";
+"Convert %lld Items to" = "Convert %lld Items to";
+"Image Actions" = "Image Actions";
+"General Actions" = "General Actions";
+"Resize…" = "Resize…";
+"Compress…" = "Compress…";
+"Remove Metadata" = "Remove Metadata";
+"Create PDF" = "Create PDF";
+
+/* Alerts */
+"OK" = "OK";
+"Cancel" = "Cancel";
+"Save" = "Save";
+"Set" = "Set";
+"Resize" = "Resize";
+"Compress" = "Compress";
+"Rename" = "Rename";
+"Rename Shelf" = "Rename Shelf";
+"Set Accent Emoji" = "Set Accent Emoji";
+"Batch Rename" = "Batch Rename";
+"Action Failed" = "Action Failed";
+"Couldn't rename" = "Couldn't rename";
+"Archive Failed" = "Archive Failed";
+"Batch Rename Failed" = "Batch Rename Failed";
+"Resize Image" = "Resize Image";
+"Compress Image" = "Compress Image";
+"alert.shelf-rename.body" = "Leave blank to clear the custom name.";
+"alert.emoji.body" = "Type or paste a single emoji.";
+"alert.batch-rename.body" = "Use # as a placeholder for the sequence number.";
+"alert.rename.body" = "Enter the new file name (extension included).";
+"alert.action-failed.body" = "The image could not be processed.";
+"alert.resize.body" = "Max dimension in pixels. Aspect ratio is preserved.";
+"alert.compress.body" = "JPEG quality (10% – 100%). Lower = smaller file.";
+"alert.batch-renamed.title" = "Renamed %1$lld, %2$lld failed";
+"alert.zip.staging-failed" = "Could not create a staging directory: %@";
+"alert.zip.stage-failed" = "Could not stage %1$@: %2$@";
+"alert.zip.launch-failed" = "Failed to launch zip: %@";
+"alert.zip.exit-status" = "zip exited with status %lld.";
+
+/* OCR menu */
+"Make Searchable" = "Make Searchable";
+"Make %lld Searchable" = "Make %lld Searchable";
+"Extract Text" = "Extract Text";
+"Extract Text from %lld Items" = "Extract Text from %lld Items";
+
+/* OCR errors (toast banner) */
+"ocr.error.source-missing" = "OCR failed: source file no longer exists.";
+"ocr.error.source-unreadable" = "OCR failed: could not read the source.";
+"ocr.error.destination-unwritable" = "OCR failed: could not write to disk.";
+"ocr.error.recognition-failed" = "OCR failed: %@";
+"ocr.error.no-text" = "OCR found no text.";
+"ocr.error.cancelled" = "OCR cancelled.";
+
+/* Conversion errors (toast banner) */
+"conversion.error.source-missing" = "Conversion failed: source file no longer exists.";
+"conversion.error.source-unreadable" = "Conversion failed: could not read the source.";
+"conversion.error.destination-unwritable" = "Conversion failed: could not write to disk.";
+"conversion.error.encoding-failed" = "Conversion failed: %@";
+"conversion.error.cancelled" = "Conversion cancelled.";
+
+/* Inline shelf strings */
+"Drop files here" = "Drop files here";
+"Drop or shake here" = "Drop or shake here";
+"Loading…" = "Loading…";
+"Empty folder" = "Empty folder";
+"Reveal in Finder" = "Reveal in Finder";
+"Select All" = "Select All";
+"Deselect All" = "Deselect All";
+"Folder" = "Folder";
+"File" = "File";
+"shelf.default-name" = "Shelf";
+"%lld Files" = "%lld Files";
+"1 file" = "1 file";
+"%lld files" = "%lld files";
+"1 File" = "1 File";
+"toast.duplicate" = "One or more items is\nalready present in the shelf";
+
+/* Manager — rename errors */
+"rename.error.item-not-found" = "Item not found.";
+"rename.error.missing-url" = "Item has no file URL.";
+"rename.error.source-missing" = "Source no longer exists: %@";
+"rename.error.destination-exists" = "A file already exists at %@.";
+"rename.error.no-effect" = "Rename reported success but the file did not move.";
+
+/* Undo */
+"undo.clear-shelf" = "Undo Clear Shelf";
+"undo.move-to-trash" = "Undo Move to Trash";
+"undo.move-to-trash-count" = "Undo Move to Trash (%lld)";

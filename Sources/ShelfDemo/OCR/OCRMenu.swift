@@ -45,7 +45,9 @@ enum OCRMenu {
         var appended = 0
 
         if shouldOfferMakeSearchable(forSourceUTIs: utis) {
-            let title = items.count > 1 ? "Make \(items.count) Searchable" : "Make Searchable"
+            let title = items.count > 1
+                ? String(format: L("Make %lld Searchable"), items.count)
+                : L("Make Searchable")
             let item = NSMenuItem(
                 title: title,
                 action: makeSearchableSelector,
@@ -61,7 +63,9 @@ enum OCRMenu {
         }
 
         if shouldOfferExtractText(forSourceUTIs: utis) {
-            let title = items.count > 1 ? "Extract Text from \(items.count) Items" : "Extract Text"
+            let title = items.count > 1
+                ? String(format: L("Extract Text from %lld Items"), items.count)
+                : L("Extract Text")
             let item = NSMenuItem(
                 title: title,
                 action: extractTextSelector,

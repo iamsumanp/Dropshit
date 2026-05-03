@@ -6,6 +6,10 @@ import SwiftUI
 @main
 struct ShelfDemoApp {
     static func main() {
+        // Must run before any localized lookup — NSBundle reads
+        // AppleLanguages once at first resolution.
+        LanguagePreference.applyAtLaunch()
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
@@ -312,7 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         let keepAwake = NSMenuItem(
-            title: "Keep Mac Awake",
+            title: L("Keep Mac Awake"),
             action: #selector(toggleKeepAwakeAction),
             keyEquivalent: ""
         )
@@ -320,14 +324,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keepAwake.state = isKeepAwake ? .on : .off
         menu.addItem(keepAwake)
 
-        let activateFor = NSMenuItem(title: "Activate for", action: nil, keyEquivalent: "")
+        let activateFor = NSMenuItem(title: L("Activate for"), action: nil, keyEquivalent: "")
         activateFor.submenu = buildKeepAwakeDurationsMenu()
         menu.addItem(activateFor)
 
         menu.addItem(.separator())
 
         let newShelf = NSMenuItem(
-            title: "New Shelf",
+            title: L("New Shelf"),
             action: #selector(newShelfAction),
             keyEquivalent: "n"
         )
@@ -336,7 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(newShelf)
 
         let newFromClip = NSMenuItem(
-            title: "New Shelf From Clipboard",
+            title: L("New Shelf From Clipboard"),
             action: #selector(newShelfFromClipboardAction),
             keyEquivalent: "a"
         )
@@ -344,14 +348,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         newFromClip.keyEquivalentModifierMask = [.option, .shift]
         menu.addItem(newFromClip)
 
-        let recent = NSMenuItem(title: "Recent Shelves", action: nil, keyEquivalent: "")
+        let recent = NSMenuItem(title: L("Recent Shelves"), action: nil, keyEquivalent: "")
         recent.submenu = buildRecentShelvesMenu()
         menu.addItem(recent)
 
         menu.addItem(.separator())
 
         let settings = NSMenuItem(
-            title: "Settings…",
+            title: L("Settings…"),
             action: #selector(openSettingsAction),
             keyEquivalent: ","
         )
@@ -359,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(settings)
 
         let quit = NSMenuItem(
-            title: "Quit",
+            title: L("Quit"),
             action: #selector(NSApp.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -417,15 +421,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let submenu = NSMenu()
         // (title, duration in seconds; nil = indefinite)
         let options: [(String, TimeInterval?)] = [
-            ("Indefinitely", nil),
-            ("5 minutes",  5 * 60),
-            ("10 minutes", 10 * 60),
-            ("15 minutes", 15 * 60),
-            ("20 minutes", 20 * 60),
-            ("1 hour",     60 * 60),
-            ("2 hours",    2 * 60 * 60),
-            ("3 hours",    3 * 60 * 60),
-            ("5 hours",    5 * 60 * 60),
+            (L("Indefinitely"), nil),
+            (L("5 minutes"),  5 * 60),
+            (L("10 minutes"), 10 * 60),
+            (L("15 minutes"), 15 * 60),
+            (L("20 minutes"), 20 * 60),
+            (L("1 hour"),     60 * 60),
+            (L("2 hours"),    2 * 60 * 60),
+            (L("3 hours"),    3 * 60 * 60),
+            (L("5 hours"),    5 * 60 * 60),
         ]
         for (title, duration) in options {
             let item = NSMenuItem(
@@ -449,7 +453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             let window = NSWindow(contentViewController: hosting)
-            window.title = "Shelf Settings"
+            window.title = L("Shelf Settings")
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
             window.center()
@@ -492,11 +496,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if shelf.items.count == 1 {
                 title = shelf.items[0].displayName
             } else {
-                title = "\(shelf.items.count) Files"
+                title = String(format: L("%lld Files"), shelf.items.count)
             }
             var subtitle = formatter.string(from: shelf.createdAt)
             if shelf.name?.isEmpty == false {
-                let count = shelf.items.count == 1 ? "1 file" : "\(shelf.items.count) files"
+                let count = shelf.items.count == 1
+                    ? L("1 file")
+                    : String(format: L("%lld files"), shelf.items.count)
                 subtitle = "\(count) · \(subtitle)"
             }
 
@@ -529,13 +535,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         if shown == 0 {
-            let empty = NSMenuItem(title: "No Recent Shelves", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L("No Recent Shelves"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
         } else {
             submenu.addItem(.separator())
             let clear = NSMenuItem(
-                title: "Clear Recent Shelves",
+                title: L("Clear Recent Shelves"),
                 action: #selector(clearAllShelvesAction),
                 keyEquivalent: ""
             )
@@ -1104,7 +1110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func showDuplicateToast(for shelfID: UUID) {
         guard let shelfPanel = panels[shelfID], shelfPanel.isVisible else { return }
-        showToast("One or more items is\nalready present in the shelf", near: shelfPanel)
+        showToast(L("toast.duplicate"), near: shelfPanel)
     }
 
     private func showConversionFailureToast(message: String) {

@@ -12,17 +12,17 @@ enum OCRError: Error, Equatable {
     var displayMessage: String {
         switch self {
         case .sourceMissing:
-            return "OCR failed: source file no longer exists."
+            return L("ocr.error.source-missing")
         case .sourceUnreadable:
-            return "OCR failed: could not read the source."
+            return L("ocr.error.source-unreadable")
         case .destinationUnwritable:
-            return "OCR failed: could not write to disk."
+            return L("ocr.error.destination-unwritable")
         case .recognitionFailed(let reason):
-            return "OCR failed: \(reason)"
+            return String(format: L("ocr.error.recognition-failed"), reason)
         case .noTextFound:
-            return "OCR found no text."
+            return L("ocr.error.no-text")
         case .cancelled:
-            return "OCR cancelled."
+            return L("ocr.error.cancelled")
         }
     }
 }

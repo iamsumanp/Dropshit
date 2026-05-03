@@ -24,13 +24,13 @@ struct CollapsedShelfView: View {
     private var pillTitle: String {
         if let n = shelf?.name, !n.isEmpty { return n }
         if items.count == 1 { return items[0].displayName }
-        return "\(items.count) Files"
+        return String(format: L("%lld Files"), items.count)
     }
 
     var body: some View {
         ZStack {
             if items.isEmpty {
-                Text("Drop files here")
+                Text(L("Drop files here"))
                     .font(.system(size: 14, weight: .regular))
                     .foregroundStyle(Color.white.opacity(0.55))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -303,7 +303,7 @@ private struct EmptyStackPreview: View {
             Image(systemName: "tray")
                 .font(.system(size: 22, weight: .regular))
                 .foregroundStyle(Color.white.opacity(0.38))
-            Text("Drop or shake here")
+            Text(L("Drop or shake here"))
                 .font(.system(size: 11))
                 .foregroundStyle(Color.white.opacity(0.45))
                 .multilineTextAlignment(.center)

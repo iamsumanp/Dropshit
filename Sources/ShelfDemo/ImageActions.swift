@@ -114,13 +114,13 @@ enum ImageActions {
 enum ImageActionPrompts {
     static func resizeMaxDimension(defaultValue: Int = 1024) -> CGFloat? {
         let alert = NSAlert()
-        alert.messageText = "Resize Image"
-        alert.informativeText = "Max dimension in pixels. Aspect ratio is preserved."
+        alert.messageText = L("Resize Image")
+        alert.informativeText = L("alert.resize.body")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
         field.stringValue = String(defaultValue)
         alert.accessoryView = field
-        alert.addButton(withTitle: "Resize")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Resize"))
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         guard let value = Double(field.stringValue), value > 0 else { return nil }
         return CGFloat(value)
@@ -128,8 +128,8 @@ enum ImageActionPrompts {
 
     static func compressionQuality(defaultValue: Double = 0.75) -> Double? {
         let alert = NSAlert()
-        alert.messageText = "Compress Image"
-        alert.informativeText = "JPEG quality (10% – 100%). Lower = smaller file."
+        alert.messageText = L("Compress Image")
+        alert.informativeText = L("alert.compress.body")
         let slider = NSSlider(
             value: defaultValue,
             minValue: 0.1,
@@ -139,8 +139,8 @@ enum ImageActionPrompts {
         )
         slider.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
         alert.accessoryView = slider
-        alert.addButton(withTitle: "Compress")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Compress"))
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         return slider.doubleValue
     }

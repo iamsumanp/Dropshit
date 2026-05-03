@@ -209,13 +209,13 @@ private final class ShelfActionTargets: NSObject {
         if !failures.isEmpty {
             let alert = NSAlert()
             alert.messageText = renamedCount > 0
-                ? "Renamed \(renamedCount), \(failures.count) failed"
-                : "Batch Rename Failed"
+                ? String(format: L("alert.batch-renamed.title"), renamedCount, failures.count)
+                : L("Batch Rename Failed")
             alert.informativeText = failures
                 .map { "• \($0.name) — \($0.reason)" }
                 .joined(separator: "\n")
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: L("OK"))
             alert.runModal()
         }
     }
@@ -242,7 +242,7 @@ private final class ShelfActionTargets: NSObject {
         do {
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         } catch {
-            Self.showZipError("Could not create a staging directory: \(error.localizedDescription)")
+            Self.showZipError(String(format: L("alert.zip.staging-failed"), error.localizedDescription))
             return
         }
 
@@ -258,7 +258,7 @@ private final class ShelfActionTargets: NSObject {
                 do {
                     try FileManager.default.copyItem(at: src, to: link)
                 } catch {
-                    Self.showZipError("Could not stage \(src.lastPathComponent): \(error.localizedDescription)")
+                    Self.showZipError(String(format: L("alert.zip.stage-failed"), src.lastPathComponent, error.localizedDescription))
                     try? FileManager.default.removeItem(at: staging)
                     return
                 }
@@ -280,7 +280,7 @@ private final class ShelfActionTargets: NSObject {
                 try process.run()
             } catch {
                 try? FileManager.default.removeItem(at: staging)
-                await Self.showZipError("Failed to launch zip: \(error.localizedDescription)")
+                await Self.showZipError(String(format: L("alert.zip.launch-failed"), error.localizedDescription))
                 return
             }
             process.waitUntilExit()
@@ -293,7 +293,7 @@ private final class ShelfActionTargets: NSObject {
 
             if status != 0 {
                 let detail = errText.isEmpty
-                    ? "zip exited with status \(status)."
+                    ? String(format: L("alert.zip.exit-status"), Int(status))
                     : errText
                 await Self.showZipError(detail)
             }
@@ -303,7 +303,7 @@ private final class ShelfActionTargets: NSObject {
     @MainActor
     private static func showZipError(_ detail: String) {
         let alert = NSAlert()
-        alert.messageText = "Archive Failed"
+        alert.messageText = L("Archive Failed")
         alert.informativeText = detail
         alert.alertStyle = .warning
         alert.runModal()
@@ -371,25 +371,25 @@ private final class ShelfActionTargets: NSObject {
 
     static func promptShelfName(current: String) -> String? {
         let alert = NSAlert()
-        alert.messageText = "Rename Shelf"
-        alert.informativeText = "Leave blank to clear the custom name."
+        alert.messageText = L("Rename Shelf")
+        alert.informativeText = L("alert.shelf-rename.body")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = current
         alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Save"))
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         return field.stringValue
     }
 
     static func promptEmoji() -> String? {
         let alert = NSAlert()
-        alert.messageText = "Set Accent Emoji"
-        alert.informativeText = "Type or paste a single emoji."
+        alert.messageText = L("Set Accent Emoji")
+        alert.informativeText = L("alert.emoji.body")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
         alert.accessoryView = field
-        alert.addButton(withTitle: "Set")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Set"))
+        alert.addButton(withTitle: L("Cancel"))
         // Open the system character palette so the user can pick one.
         NSApp.orderFrontCharacterPalette(nil)
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
@@ -400,13 +400,13 @@ private final class ShelfActionTargets: NSObject {
 
     static func promptBatchRename(defaultPattern: String = "File #") -> String? {
         let alert = NSAlert()
-        alert.messageText = "Batch Rename"
-        alert.informativeText = "Use # as a placeholder for the sequence number."
+        alert.messageText = L("Batch Rename")
+        alert.informativeText = L("alert.batch-rename.body")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = defaultPattern
         alert.accessoryView = field
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Rename"))
+        alert.addButton(withTitle: L("Cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let trimmed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -432,14 +432,14 @@ enum ShelfActionMenuBuilder {
 
         // Open With — only for a single file
         if items.count == 1, let url = items[0].fileURL {
-            let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+            let openWith = NSMenuItem(title: L("Open With"), action: nil, keyEquivalent: "")
             openWith.image = symbol("square.stack")
             openWith.submenu = makeOpenWithMenu(for: url, targets: targets)
             menu.addItem(openWith)
         }
 
         menu.addItem(makeItem(
-            title: "Show in Finder",
+            title: L("Show in Finder"),
             symbol: "folder",
             action: #selector(ShelfActionTargets.showInFinder),
             target: targets,
@@ -447,7 +447,7 @@ enum ShelfActionMenuBuilder {
         ))
 
         menu.addItem(makeItem(
-            title: "Quick Look",
+            title: L("Quick Look"),
             symbol: "eye",
             action: #selector(ShelfActionTargets.quickLook),
             target: targets,
@@ -457,7 +457,7 @@ enum ShelfActionMenuBuilder {
         menu.addItem(.separator())
 
         menu.addItem(makeItem(
-            title: "AirDrop",
+            title: L("AirDrop"),
             symbol: "wave.3.right",
             action: #selector(ShelfActionTargets.airDrop),
             target: targets,
@@ -465,7 +465,7 @@ enum ShelfActionMenuBuilder {
         ))
 
         menu.addItem(makeItem(
-            title: "Messages",
+            title: L("Messages"),
             symbol: "message",
             action: #selector(ShelfActionTargets.messages),
             target: targets,
@@ -475,14 +475,16 @@ enum ShelfActionMenuBuilder {
         menu.addItem(.separator())
 
         menu.addItem(makeItem(
-            title: "Add From Clipboard",
+            title: L("Add From Clipboard"),
             symbol: "doc.on.clipboard",
             action: #selector(ShelfActionTargets.addFromClipboard),
             target: targets,
             enabled: true
         ))
 
-        let copyTitle = items.count <= 1 ? "Copy" : "Copy \(items.count) Files"
+        let copyTitle = items.count <= 1
+            ? L("Copy")
+            : String(format: L("Copy %lld Files"), items.count)
         menu.addItem(makeItem(
             title: copyTitle,
             symbol: "doc.on.doc",
@@ -493,12 +495,12 @@ enum ShelfActionMenuBuilder {
 
         menu.addItem(.separator())
 
-        let allActions = NSMenuItem(title: "All Actions", action: nil, keyEquivalent: "")
+        let allActions = NSMenuItem(title: L("All Actions"), action: nil, keyEquivalent: "")
         allActions.image = symbol("ellipsis.circle")
         allActions.submenu = makeAllActionsMenu(targets: targets, hasFiles: hasFiles)
         menu.addItem(allActions)
 
-        let identity = NSMenuItem(title: "Shelf", action: nil, keyEquivalent: "")
+        let identity = NSMenuItem(title: L("Shelf"), action: nil, keyEquivalent: "")
         identity.image = symbol("tag")
         identity.submenu = makeIdentityMenu(manager: manager, shelfID: shelfID, targets: targets)
         menu.addItem(identity)
@@ -507,7 +509,7 @@ enum ShelfActionMenuBuilder {
         // user knows whether they're undoing a Clear or a Move-to-Trash. The
         // row stays in the menu when there's nothing to undo (disabled), so
         // discoverability isn't tied to recent activity.
-        let undoTitle = manager.undoSnapshot?.menuTitle ?? "Undo"
+        let undoTitle = manager.undoSnapshot?.menuTitle ?? L("Undo")
         let undo = NSMenuItem(
             title: undoTitle,
             action: #selector(ShelfActionTargets.undo),
@@ -520,7 +522,7 @@ enum ShelfActionMenuBuilder {
         menu.addItem(undo)
 
         menu.addItem(makeItem(
-            title: "Clear Shelf",
+            title: L("Clear Shelf"),
             symbol: "xmark.bin",
             action: #selector(ShelfActionTargets.clear),
             target: targets,
@@ -540,7 +542,7 @@ enum ShelfActionMenuBuilder {
         let isPinned = shelf?.pinned ?? false
         let currentAccent = shelf?.accent
 
-        let renameTitle = (shelf?.name?.isEmpty == false) ? "Rename Shelf…" : "Name Shelf…"
+        let renameTitle = (shelf?.name?.isEmpty == false) ? L("Rename Shelf…") : L("Name Shelf…")
         menu.addItem(makeItem(
             title: renameTitle,
             symbol: "character.cursor.ibeam",
@@ -550,7 +552,7 @@ enum ShelfActionMenuBuilder {
         ))
 
         let pin = makeItem(
-            title: isPinned ? "Unpin Shelf" : "Pin Shelf",
+            title: isPinned ? L("Unpin Shelf") : L("Pin Shelf"),
             symbol: isPinned ? "pin.slash" : "pin",
             action: #selector(ShelfActionTargets.togglePinned),
             target: targets,
@@ -561,7 +563,7 @@ enum ShelfActionMenuBuilder {
 
         menu.addItem(.separator())
 
-        let accentLabel = NSMenuItem(title: "Accent", action: nil, keyEquivalent: "")
+        let accentLabel = NSMenuItem(title: L("Accent"), action: nil, keyEquivalent: "")
         accentLabel.image = symbol("paintpalette")
         accentLabel.submenu = makeAccentMenu(currentAccent: currentAccent, targets: targets)
         menu.addItem(accentLabel)
@@ -576,7 +578,7 @@ enum ShelfActionMenuBuilder {
         let menu = NSMenu()
 
         let none = NSMenuItem(
-            title: "None",
+            title: L("None"),
             action: #selector(ShelfActionTargets.clearAccent),
             keyEquivalent: ""
         )
@@ -587,12 +589,12 @@ enum ShelfActionMenuBuilder {
         menu.addItem(.separator())
 
         let palette: [(String, String)] = [
-            ("Red",    "#FF453A"),
-            ("Orange", "#FF9F0A"),
-            ("Yellow", "#FFD60A"),
-            ("Green",  "#30D158"),
-            ("Blue",   "#0A84FF"),
-            ("Purple", "#BF5AF2"),
+            (L("Red"),    "#FF453A"),
+            (L("Orange"), "#FF9F0A"),
+            (L("Yellow"), "#FFD60A"),
+            (L("Green"),  "#30D158"),
+            (L("Blue"),   "#0A84FF"),
+            (L("Purple"), "#BF5AF2"),
         ]
         for (label, hex) in palette {
             let mi = NSMenuItem(
@@ -610,7 +612,7 @@ enum ShelfActionMenuBuilder {
         menu.addItem(.separator())
 
         let emoji = NSMenuItem(
-            title: "Pick Emoji…",
+            title: L("Pick Emoji…"),
             action: #selector(ShelfActionTargets.pickAccentEmoji),
             keyEquivalent: ""
         )
@@ -642,7 +644,7 @@ enum ShelfActionMenuBuilder {
         let menu = NSMenu()
 
         menu.addItem(makeItem(
-            title: "Get Info",
+            title: L("Get Info"),
             symbol: "info.circle",
             action: #selector(ShelfActionTargets.getInfo),
             target: targets,
@@ -650,7 +652,7 @@ enum ShelfActionMenuBuilder {
         ))
 
         menu.addItem(makeItem(
-            title: "Batch Rename…",
+            title: L("Batch Rename…"),
             symbol: "character.cursor.ibeam",
             action: #selector(ShelfActionTargets.batchRename),
             target: targets,
@@ -658,7 +660,7 @@ enum ShelfActionMenuBuilder {
         ))
 
         menu.addItem(makeItem(
-            title: "Create ZIP Archive…",
+            title: L("Create ZIP Archive…"),
             symbol: "doc.zipper",
             action: #selector(ShelfActionTargets.createZipArchive),
             target: targets,
@@ -666,7 +668,7 @@ enum ShelfActionMenuBuilder {
         ))
 
         menu.addItem(makeItem(
-            title: "Copy Path",
+            title: L("Copy Path"),
             symbol: "doc.on.doc",
             action: #selector(ShelfActionTargets.copyPath),
             target: targets,
@@ -676,7 +678,7 @@ enum ShelfActionMenuBuilder {
         menu.addItem(.separator())
 
         menu.addItem(makeItem(
-            title: "Move to Trash",
+            title: L("Move to Trash"),
             symbol: "trash",
             action: #selector(ShelfActionTargets.moveAllToTrash),
             target: targets,
@@ -693,7 +695,7 @@ enum ShelfActionMenuBuilder {
 
         if let app = defaultApp {
             let mi = NSMenuItem(
-                title: appDisplayName(app) + " (default)",
+                title: appDisplayName(app) + L("openwith.default.suffix"),
                 action: #selector(ShelfActionTargets.openWith(_:)),
                 keyEquivalent: ""
             )
@@ -721,7 +723,7 @@ enum ShelfActionMenuBuilder {
         }
 
         if menu.items.isEmpty {
-            let empty = NSMenuItem(title: "No Applications", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L("No Applications"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
         }
