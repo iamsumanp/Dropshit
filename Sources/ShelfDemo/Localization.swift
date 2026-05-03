@@ -1,11 +1,15 @@
 import Foundation
 import SwiftUI
 
-/// Short helper for plain-Swift / AppKit lookups. Resolves keys against
-/// `Bundle.module` (where SwiftPM puts our .lproj resources) so localizations
-/// are picked up regardless of how the build is run.
+/// Short helper for plain-Swift / AppKit lookups. Resolves keys against the
+/// .lproj bundle that matches the user's chosen language. We can't rely on
+/// the standard `AppleLanguages` UserDefaults override here because that
+/// override only steers `Bundle.main`'s preferred localizations — SwiftPM's
+/// resource sub-bundle (`Bundle.module`) ignores it and always falls back
+/// to the development localization, so we resolve the lproj manually.
 func L(_ key: String, comment: StaticString = "") -> String {
-    NSLocalizedString(key, bundle: .module, comment: String(describing: comment))
+    let bundle = LanguagePreference.activeBundle()
+    return NSLocalizedString(key, bundle: bundle, comment: String(describing: comment))
 }
 
 /// SwiftUI: prefer `Text(L("key"))` for already-resolved strings.
@@ -59,6 +63,9 @@ enum LanguagePreference {
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: storageKey)
             applyToAppleLanguages(newValue)
+            // Drop the cached bundle so a subsequent L() call re-resolves
+            // against the freshly-chosen language.
+            cachedBundle = nil
         }
     }
 
@@ -67,6 +74,65 @@ enum LanguagePreference {
     /// a string — overwriting it later in the same process is too late.
     static func applyAtLaunch() {
         applyToAppleLanguages(current)
+        // Warm the bundle cache. Cheap, and means the first L() call doesn't
+        // pay for filesystem lookup of the lproj path.
+        _ = activeBundle()
+    }
+
+    /// Returns the `.lproj` sub-bundle of `Bundle.module` matching the user's
+    /// chosen language, or `Bundle.module` itself if no override applies (or
+    /// the lproj can't be opened, in which case NSLocalizedString will fall
+    /// through to its dev-localization default).
+    static func activeBundle() -> Bundle {
+        // Lock onto the resolved code per-process; the user can't change
+        // language without a relaunch, so this is safe to cache.
+        if let cached = cachedBundle { return cached }
+        let resolved = resolveActiveBundle()
+        cachedBundle = resolved
+        return resolved
+    }
+
+    private static var cachedBundle: Bundle?
+
+    private static func resolveActiveBundle() -> Bundle {
+        let module = Bundle.module
+        let code: String
+        switch current {
+        case .system:
+            // Pick the first system-preferred language that we actually have
+            // an lproj for. Falls through to module (dev localization) when
+            // none of the user's preferred languages are translated.
+            let preferred = Locale.preferredLanguages
+            let available = Set(module.localizations.map { $0.lowercased() })
+            let match = preferred.first { lang in
+                available.contains(lang.lowercased())
+                    || available.contains(canonicalize(lang).lowercased())
+            }
+            guard let match else { return module }
+            code = canonicalize(match)
+        case let explicit:
+            code = explicit.rawValue
+        }
+        // SwiftPM lower-cases lproj directory names on disk for some locales
+        // (e.g. zh-Hans → zh-hans), so probe both variants.
+        let candidates = [code, code.lowercased()]
+        for candidate in candidates {
+            if let path = module.path(forResource: candidate, ofType: "lproj"),
+               let bundle = Bundle(path: path) {
+                return bundle
+            }
+        }
+        return module
+    }
+
+    /// Strips region/script qualifiers we don't care about (e.g. `en-US` → `en`)
+    /// while preserving canonical script tags we use directly (`zh-Hans`,
+    /// `zh-Hant`). Keeps fallback matching forgiving.
+    private static func canonicalize(_ tag: String) -> String {
+        let lower = tag.lowercased()
+        if lower.hasPrefix("zh-hans") { return "zh-Hans" }
+        if lower.hasPrefix("zh-hant") { return "zh-Hant" }
+        return String(tag.split(separator: "-").first ?? Substring(tag))
     }
 
     /// Writes (or clears) the override into the user-defaults `AppleLanguages`
@@ -81,26 +147,4 @@ enum LanguagePreference {
         }
     }
 
-    /// Re-launches the app so the new language takes effect. Falls back to
-    /// quitting if `NSWorkspace` can't reopen the bundle (rare — happens for
-    /// raw SwiftPM debug binaries that aren't a proper `.app`).
-    @MainActor
-    static func relaunch() {
-        let bundleURL = Bundle.main.bundleURL
-        let isAppBundle = bundleURL.pathExtension == "app"
-        if isAppBundle {
-            let config = NSWorkspace.OpenConfiguration()
-            config.createsNewApplicationInstance = true
-            NSWorkspace.shared.openApplication(at: bundleURL, configuration: config) { _, _ in
-                Task { @MainActor in NSApp.terminate(nil) }
-            }
-        } else {
-            // Dev / raw executable — best effort: re-exec the same binary.
-            let path = Bundle.main.executablePath ?? CommandLine.arguments[0]
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-            try? process.run()
-            NSApp.terminate(nil)
-        }
-    }
 }

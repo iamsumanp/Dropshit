@@ -31,9 +31,6 @@ struct SettingsView: View {
     /// stays in sync if the file is removed externally.
     @State private var launchAtLogin: Bool = LaunchAtLoginManager.isEnabled
 
-    /// Currently-applied language. Diffing against the picker selection tells
-    /// us whether to show the "Quit & Reopen" prompt.
-    @State private var appliedLanguage: AppLanguage = LanguagePreference.current
     @State private var pickedLanguage: AppLanguage = LanguagePreference.current
 
     var body: some View {
@@ -51,6 +48,11 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
+                // The .menu Picker bridges to NSPopUpButton and caches its
+                // option Text views, so the dropdown doesn't relabel when
+                // the language flips. A fresh identity on language change
+                // forces it to rebuild from scratch.
+                .id(pickedLanguage)
 
                 Text(L("settings.expiry.description"))
                     .font(.system(size: 11))
@@ -83,35 +85,30 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L("Language"))
                     .font(.system(size: 13, weight: .medium))
-                Picker("", selection: $pickedLanguage) {
+                // Custom binding so the LanguagePreference write happens
+                // synchronously inside the Picker's setter, before SwiftUI
+                // tears down anything in response to the @State change.
+                // .onChange is unreliable here — when the surrounding view
+                // gets re-identified by a peer Picker's .id(), the handler
+                // can be discarded before it runs.
+                Picker("", selection: Binding(
+                    get: { pickedLanguage },
+                    set: { newValue in
+                        pickedLanguage = newValue
+                        LanguagePreference.current = newValue
+                    }
+                )) {
                     ForEach(AppLanguage.allCases) { lang in
                         Text(lang.displayName).tag(lang)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .onChange(of: pickedLanguage) { newValue in
-                    LanguagePreference.current = newValue
-                }
 
                 Text(L("settings.language.description"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-
-                if pickedLanguage != appliedLanguage {
-                    HStack(spacing: 8) {
-                        Text(L("Takes effect on next launch."))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                        Button(L("Quit & Reopen")) {
-                            LanguagePreference.relaunch()
-                        }
-                        .controlSize(.small)
-                    }
-                    .padding(.top, 2)
-                }
             }
 
             Divider()
@@ -132,7 +129,6 @@ struct SettingsView: View {
         .frame(width: 380, alignment: .leading)
         .onAppear {
             launchAtLogin = LaunchAtLoginManager.isEnabled
-            appliedLanguage = LanguagePreference.current
             pickedLanguage = LanguagePreference.current
         }
     }
