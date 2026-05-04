@@ -762,7 +762,8 @@ private struct ExpandedShelfView: View {
                         isSelected: folderSelection.contains(entry.id),
                         onClick: { modifiers in handleFolderClick(entry: entry, modifiers: modifiers) },
                         onDoubleClick: { handleEntryDoubleClick(entry) },
-                        onNavigateInto: { enterFolder(entry.url) }
+                        onNavigateInto: { enterFolder(entry.url) },
+                        urlsProvider: { selectedFolderURLs(draggedEntry: entry) }
                     )
                 }
             }
@@ -780,7 +781,8 @@ private struct ExpandedShelfView: View {
                         isSelected: folderSelection.contains(entry.id),
                         onClick: { modifiers in handleFolderClick(entry: entry, modifiers: modifiers) },
                         onDoubleClick: { handleEntryDoubleClick(entry) },
-                        onNavigateInto: { enterFolder(entry.url) }
+                        onNavigateInto: { enterFolder(entry.url) },
+                        urlsProvider: { selectedFolderURLs(draggedEntry: entry) }
                     )
                 }
             }
@@ -799,6 +801,18 @@ private struct ExpandedShelfView: View {
         } else {
             folderSelection = [entry.id]
         }
+    }
+
+    /// URLs to drag when the user starts a drag from `draggedEntry`. If the
+    /// drag started on a tile that's part of a multi-selection, all selected
+    /// entries ride along; otherwise just the single dragged entry.
+    private func selectedFolderURLs(draggedEntry: FolderEntry) -> [URL] {
+        if folderSelection.contains(draggedEntry.id) && folderSelection.count > 1 {
+            return currentEntries
+                .filter { folderSelection.contains($0.id) }
+                .map { $0.url }
+        }
+        return [draggedEntry.url]
     }
 
     private func handleClick(itemID: UUID, modifiers: NSEvent.ModifierFlags) {
@@ -996,6 +1010,9 @@ private struct FolderEntryGridCell: View {
     let onClick: (NSEvent.ModifierFlags) -> Void
     let onDoubleClick: () -> Void
     let onNavigateInto: () -> Void
+    /// Resolved at drag-start time. When this entry is part of a multi-selection,
+    /// returns every selected entry's URL so the drag carries them all.
+    let urlsProvider: () -> [URL]
 
     @State private var hovering = false
     @State private var thumbnail: NSImage?
@@ -1030,7 +1047,7 @@ private struct FolderEntryGridCell: View {
                 .offset(y: hovering ? -3 : 0)
                 .overlay(
                     ShelfDragOverlay(
-                        provider: { [entry.url] },
+                        provider: urlsProvider,
                         onStart: {},
                         onEnd: {},
                         onClick: onClick,
@@ -1154,6 +1171,7 @@ private struct FolderEntryListItem: View {
     let onClick: (NSEvent.ModifierFlags) -> Void
     let onDoubleClick: () -> Void
     let onNavigateInto: () -> Void
+    let urlsProvider: () -> [URL]
 
     @State private var hovering = false
     @State private var thumbnail: NSImage?
@@ -1196,7 +1214,7 @@ private struct FolderEntryListItem: View {
         )
         .overlay(
             ShelfDragOverlay(
-                provider: { [entry.url] },
+                provider: urlsProvider,
                 onStart: {},
                 onEnd: {},
                 onClick: onClick,
