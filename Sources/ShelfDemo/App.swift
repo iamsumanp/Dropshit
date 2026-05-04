@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import IOKit.pwr_mgt
+import Sparkle
 import SwiftUI
 
 @main
@@ -51,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var ocrCompletedSearchableCancellable: AnyCancellable?
     private var ocrCompletedExtractedCancellable: AnyCancellable?
     private var ocrFailedCancellable: AnyCancellable?
+
+    // Sparkle-driven auto-update — owns SPUStandardUpdaterController.
+    private let updateController = UpdateController()
 
     // Duplicate-drop toast.
     private var duplicateToastCancellable: AnyCancellable?
@@ -362,6 +366,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        // Wire the menu item directly to SPUStandardUpdaterController so AppKit's
+        // responder chain calls its `validateMenuItem(_:)` — the item auto-grays
+        // out while a check or download is already in flight.
+        let checkUpdates = NSMenuItem(
+            title: L("Check for Updates…"),
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkUpdates.target = updateController.updaterController
+        menu.addItem(checkUpdates)
+
         let quit = NSMenuItem(
             title: L("Quit"),
             action: #selector(NSApp.terminate(_:)),
@@ -453,6 +468,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             let window = NSWindow(contentViewController: hosting)
+            // Set once at creation; the title doesn't refresh on language
+            // change. Pre-existing accepted limitation from v1.4.
             window.title = L("Shelf Settings")
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false

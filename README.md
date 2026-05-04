@@ -81,7 +81,31 @@ gh release create v1.2 Dropshit.dmg \
   --notes "What changed in this release…"
 ```
 
-`scripts/build-dmg.sh` regenerates the app icon (`scripts/make-icon.swift`), builds in release mode, ad-hoc signs, and packages a DMG with an `/Applications` symlink for drag-install.
+`scripts/build-dmg.sh` regenerates the app icon (`scripts/make-icon.swift`), builds in release mode, embeds Sparkle.framework, ad-hoc signs the bundle inner-out, and packages a DMG with an `/Applications` symlink for drag-install.
+
+### Releasing a new version (with auto-update)
+
+Dropshit ships with Sparkle 2.x for in-app updates from v1.5.0 onward. Each release is signed with an EdDSA private key and listed in `appcast.xml` so existing installs pick it up.
+
+**One-time setup (per release machine):**
+
+1. `swift package resolve` — pulls Sparkle's CLI tools into `.build/artifacts/sparkle/Sparkle/bin/`.
+2. `.build/artifacts/sparkle/Sparkle/bin/generate_keys` — creates the EdDSA key pair. The private key lives in your macOS Keychain; the tool prints the public key.
+3. Save the public key into `scripts/.sparkle-public-key` (gitignored):
+   ```sh
+   echo "SPARKLE_PUBLIC_KEY=<paste public key here>" > scripts/.sparkle-public-key
+   ```
+
+**Per release:**
+
+1. Bump `VERSION` in `scripts/build-dmg.sh` (drives both `CFBundleShortVersionString` and `CFBundleVersion`, which Sparkle compares against `sparkle:version` in the appcast).
+2. `bash scripts/build-dmg.sh` — produces `Dropshit.dmg` with Sparkle.framework embedded and the feed URL + public key baked into Info.plist.
+3. `bash scripts/sign-appcast.sh Dropshit.dmg <version>` — prints an appcast `<item>` snippet with the signed enclosure to stdout.
+4. Prepend that snippet inside the `<channel>` block in `appcast.xml`.
+5. `gh release create v<version> Dropshit.dmg --title "Dropshit v<version>" --notes "..."`
+6. `git add appcast.xml && git commit -m "release: v<version>" && git push origin main`
+
+Existing v1.5.0+ installs see the new version on their next daily check (or when the user clicks "Check for Updates…" in the menu). v1.4.x users will need to download v1.5.0 manually one final time.
 
 ## Permissions
 

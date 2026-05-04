@@ -25,6 +25,7 @@ struct SettingsView: View {
     @AppStorage("shelf.expiryDays") private var expiryDays: Int = ShelfExpiry.tenDays.rawValue
     @AppStorage("shelf.autoParkTopRight") private var autoParkTopRight: Bool = false
     @AppStorage("shelf.closeOnOutsideClick") private var closeOnOutsideClick: Bool = false
+    @AppStorage("SUEnableAutomaticChecks") private var autoCheckUpdates: Bool = true
 
     /// Source of truth is whether our LaunchAgent plist exists in
     /// `~/Library/LaunchAgents/`. Mirrored into local state so the toggle
@@ -120,6 +121,19 @@ struct SettingsView: View {
                 ))
                 .toggleStyle(.switch)
                 Text(L("settings.launch.description"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L("Updates"))
+                    .font(.system(size: 13, weight: .medium))
+                Toggle(L("Automatically check for updates"), isOn: $autoCheckUpdates)
+                    .toggleStyle(.switch)
+                Text(L("settings.updates.description"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
