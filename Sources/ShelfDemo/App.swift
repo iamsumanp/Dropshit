@@ -52,6 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var ocrCompletedExtractedCancellable: AnyCancellable?
     private var ocrFailedCancellable: AnyCancellable?
 
+    // Sparkle-driven auto-update — owns SPUStandardUpdaterController.
+    private let updateController = UpdateController()
+
     // Duplicate-drop toast.
     private var duplicateToastCancellable: AnyCancellable?
     private var toastPanel: NSPanel?
@@ -362,6 +365,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        let checkUpdates = NSMenuItem(
+            title: L("Check for Updates…"),
+            action: #selector(checkForUpdatesAction),
+            keyEquivalent: ""
+        )
+        checkUpdates.target = self
+        menu.addItem(checkUpdates)
+
         let quit = NSMenuItem(
             title: L("Quit"),
             action: #selector(NSApp.terminate(_:)),
@@ -462,6 +473,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Accessory app: temporarily bring to front so the window receives focus.
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func checkForUpdatesAction() {
+        updateController.checkForUpdates()
     }
 
     private func buildRecentShelvesMenu() -> NSMenu {
