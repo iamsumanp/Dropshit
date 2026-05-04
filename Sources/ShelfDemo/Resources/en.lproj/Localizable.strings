@@ -43,6 +43,12 @@
 "Settings…" = "Settings…";
 "Quit" = "Quit";
 
+/* Auto-update */
+"Check for Updates…" = "Check for Updates…";
+"Updates" = "Updates";
+"Automatically check for updates" = "Automatically check for updates";
+"settings.updates.description" = "Dropshit checks for new releases in the background once a day. New versions are downloaded, verified, and installed when you click \"Install and Relaunch\".";
+
 /* Shelf action menu */
 "Open With" = "Open With";
 "Show in Finder" = "Show in Finder";

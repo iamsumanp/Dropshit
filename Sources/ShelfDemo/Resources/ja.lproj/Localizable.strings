@@ -42,6 +42,12 @@
 "Settings…" = "設定…";
 "Quit" = "終了";
 
+/* Auto-update */
+"Check for Updates…" = "アップデートを確認…";
+"Updates" = "アップデート";
+"Automatically check for updates" = "アップデートを自動的に確認";
+"settings.updates.description" = "Dropshit は1日1回、バックグラウンドで新しいリリースを確認します。「インストールして再起動」をクリックすると、新バージョンがダウンロード、検証、インストールされます。";
+
 "Open With" = "このアプリケーションで開く";
 "Show in Finder" = "Finder で表示";
 "Quick Look" = "クイックルック";

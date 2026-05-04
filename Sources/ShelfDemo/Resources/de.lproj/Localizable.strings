@@ -42,6 +42,12 @@
 "Settings…" = "Einstellungen…";
 "Quit" = "Beenden";
 
+/* Auto-update */
+"Check for Updates…" = "Nach Updates suchen…";
+"Updates" = "Updates";
+"Automatically check for updates" = "Automatisch nach Updates suchen";
+"settings.updates.description" = "Dropshit sucht einmal täglich im Hintergrund nach neuen Versionen. Neue Versionen werden heruntergeladen, verifiziert und installiert, sobald Sie auf „Installieren und neu starten“ klicken.";
+
 "Open With" = "Öffnen mit";
 "Show in Finder" = "Im Finder anzeigen";
 "Quick Look" = "Übersicht";
