@@ -55,6 +55,11 @@ echo "==> Assembling .app bundle"
 cp ".build/release/${BIN_NAME}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
+# Swift Package Manager builds a binary that doesn't know it'll live inside
+# an .app bundle, so it doesn't add the standard Frameworks rpath. Without
+# this, dyld can't find Sparkle.framework at runtime and the app won't launch.
+install_name_tool -add_rpath @executable_path/../Frameworks "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+
 if [ -d "Sources/${BIN_NAME}/Resources" ]; then
   cp -R "Sources/${BIN_NAME}/Resources/." "${APP_DIR}/Contents/Resources/" 2>/dev/null || true
 fi
