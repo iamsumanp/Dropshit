@@ -11,11 +11,11 @@
             <sparkle:version>1.5.0</sparkle:version>
             <sparkle:shortVersionString>1.5.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <pubDate>Mon, 04 May 2026 18:52:10 +0000</pubDate>
+            <pubDate>Mon, 04 May 2026 19:11:16 +0000</pubDate>
             <description><![CDATA[See release notes at https://github.com/iamsumanp/Dropshit/releases/tag/v1.5.0]]></description>
             <enclosure
                 url="https://github.com/iamsumanp/Dropshit/releases/download/v1.5.0/Dropshit.dmg"
-                sparkle:edSignature="yuVTihs/2vSrVx9zvEtOxGA3CGmbYrw6Y9f4+UBNbBEAHdPexnJ//PjERdxfS8I0AsMHbVaNgHviXT+sd3ueBw==" length="2535344"
+                sparkle:edSignature="yshY+UDBtCMQ5MoJ+nfgwCYMBvO7K0+0uC8SW6ZHfEwiuYu/SuU0k0SWmoAoNL5o3wYaCoQJ+booa99K06KoBw==" length="2535467"
                 type="application/octet-stream" />
         </item>
     </channel>
