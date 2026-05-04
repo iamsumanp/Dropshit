@@ -5,5 +5,4 @@ xcuserdata/
 *.xcworkspace
 .swiftpm/
 Packages/
-Package.resolved
 scripts/.sparkle-public-key

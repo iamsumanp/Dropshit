@@ -9,7 +9,11 @@ import Sparkle
 /// to NSMenuItem validation out of the box.
 @MainActor
 final class UpdateController {
-    private let updaterController: SPUStandardUpdaterController
+    /// Exposed so the menu item can target it directly with
+    /// `#selector(SPUStandardUpdaterController.checkForUpdates(_:))`. That
+    /// hookup gives us automatic NSMenuItem validation (Sparkle disables the
+    /// item while a check or download is already running) without any glue.
+    let updaterController: SPUStandardUpdaterController
 
     init() {
         // startingUpdater: true → Sparkle begins its periodic check timer
@@ -22,12 +26,6 @@ final class UpdateController {
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
-    }
-
-    /// User-initiated check. Always shows UI — even if no update is available
-    /// it surfaces the "You're up to date" alert.
-    func checkForUpdates() {
-        updaterController.checkForUpdates(nil)
     }
 
     /// Bridges Sparkle's `SUEnableAutomaticChecks` UserDefaults key, which is

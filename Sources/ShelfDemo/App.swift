@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import IOKit.pwr_mgt
+import Sparkle
 import SwiftUI
 
 @main
@@ -365,12 +366,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.target = self
         menu.addItem(settings)
 
+        // Wire the menu item directly to SPUStandardUpdaterController so AppKit's
+        // responder chain calls its `validateMenuItem(_:)` — the item auto-grays
+        // out while a check or download is already in flight.
         let checkUpdates = NSMenuItem(
             title: L("Check for Updates…"),
-            action: #selector(checkForUpdatesAction),
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
             keyEquivalent: ""
         )
-        checkUpdates.target = self
+        checkUpdates.target = updateController.updaterController
         menu.addItem(checkUpdates)
 
         let quit = NSMenuItem(
@@ -464,6 +468,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             let window = NSWindow(contentViewController: hosting)
+            // Set once at creation; the title doesn't refresh on language
+            // change. Pre-existing accepted limitation from v1.4.
             window.title = L("Shelf Settings")
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
@@ -473,10 +479,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Accessory app: temporarily bring to front so the window receives focus.
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func checkForUpdatesAction() {
-        updateController.checkForUpdates()
     }
 
     private func buildRecentShelvesMenu() -> NSMenu {

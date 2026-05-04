@@ -98,7 +98,7 @@ Dropshit ships with Sparkle 2.x for in-app updates from v1.5.0 onward. Each rele
 
 **Per release:**
 
-1. Bump `VERSION` and `BUILD` in `scripts/build-dmg.sh`.
+1. Bump `VERSION` in `scripts/build-dmg.sh` (drives both `CFBundleShortVersionString` and `CFBundleVersion`, which Sparkle compares against `sparkle:version` in the appcast).
 2. `bash scripts/build-dmg.sh` — produces `Dropshit.dmg` with Sparkle.framework embedded and the feed URL + public key baked into Info.plist.
 3. `bash scripts/sign-appcast.sh Dropshit.dmg <version>` — prints an appcast `<item>` snippet with the signed enclosure to stdout.
 4. Prepend that snippet inside the `<channel>` block in `appcast.xml`.

@@ -47,7 +47,7 @@
 "Check for Updates…" = "Sprawdź aktualizacje…";
 "Updates" = "Aktualizacje";
 "Automatically check for updates" = "Automatycznie sprawdzaj aktualizacje";
-"settings.updates.description" = "Dropshit sprawdza nowe wydania w tle raz dziennie. Nowe wersje są pobierane, weryfikowane i instalowane po kliknięciu „Zainstaluj i uruchom ponownie\".";
+"settings.updates.description" = "Dropshit sprawdza nowe wydania w tle raz dziennie. Nowe wersje są pobierane, weryfikowane i instalowane po kliknięciu „Zainstaluj i uruchom ponownie”.";
 
 "Open With" = "Otwórz w";
 "Show in Finder" = "Pokaż w Finderze";

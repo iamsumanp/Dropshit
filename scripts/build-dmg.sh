@@ -28,8 +28,10 @@ SPARKLE_FEED_URL="https://raw.githubusercontent.com/iamsumanp/Dropshit/main/appc
 APP_NAME="Dropshit"
 BIN_NAME="ShelfDemo"
 BUNDLE_ID="com.boski.dropshit"
+# VERSION drives both CFBundleShortVersionString and CFBundleVersion so the
+# value Sparkle compares (sparkle:version vs CFBundleVersion) lines up with
+# the same dotted form we publish in appcast.xml.
 VERSION="1.5.0"
-BUILD="7"
 MIN_OS="13.0"
 
 APP_DIR="dist/${APP_NAME}.app"
@@ -87,7 +89,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleVersion</key><string>${BUILD}</string>
+  <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key><string>${MIN_OS}</string>
   <key>LSUIElement</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
