@@ -57,9 +57,12 @@ chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 RESOURCE_BUNDLE=".build/release/${BIN_NAME}_${BIN_NAME}.bundle"
 
-if [ -d "${RESOURCE_BUNDLE}" ]; then
-  cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/"
+if [ ! -d "${RESOURCE_BUNDLE}" ]; then
+  echo "ERROR: SwiftPM resource bundle not found: ${RESOURCE_BUNDLE}"
+  exit 1
 fi
+
+cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/"
 
 # Swift Package Manager builds a binary that doesn't know it'll live inside
 # an .app bundle, so it doesn't add the standard Frameworks rpath. Without
