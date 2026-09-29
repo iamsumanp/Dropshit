@@ -132,16 +132,31 @@ private final class ShelfActionTargets: NSObject {
         let urls = self.urls
         guard !urls.isEmpty else { return }
         // Cap to avoid spamming windows for huge shelves.
-        for url in urls.prefix(8) {
-            let escaped = url.path.replacingOccurrences(of: "\"", with: "\\\"")
-            let source = """
-            tell application "Finder"
-                activate
-                open information window of (POSIX file "\(escaped)" as alias)
-            end tell
-            """
-            var error: NSDictionary?
-            NSAppleScript(source: source)?.executeAndReturnError(&error)
+        let paths = urls.prefix(8).map { $0.path }
+        Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = [
+                "-e",
+                """
+                on run argv
+                    tell application "Finder"
+                        activate
+                        repeat with aPath in argv
+                            try
+                                open information window of (POSIX file aPath as alias)
+                            end try
+                        end repeat
+                    end tell
+                end run
+                """
+            ] + paths
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                // Ignore failure if osascript cannot be launched.
+            }
         }
     }
 
