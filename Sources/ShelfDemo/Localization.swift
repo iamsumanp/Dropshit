@@ -94,8 +94,22 @@ enum LanguagePreference {
 
     private static var cachedBundle: Bundle?
 
+    /// SwiftPM's resource bundle. The generated `Bundle.module` accessor only
+    /// looks next to the .app root and at the absolute `.build` path of the
+    /// machine that compiled it, and traps when neither exists — so inside a
+    /// packaged .app (where build-dmg.sh puts it in Contents/Resources) it
+    /// crashes on every other machine. Check Contents/Resources first and
+    /// only fall back to `Bundle.module` for `swift run` / tests.
+    private static let resourceBundle: Bundle = {
+        if let url = Bundle.main.resourceURL?.appendingPathComponent("ShelfDemo_ShelfDemo.bundle"),
+           let bundle = Bundle(url: url) {
+            return bundle
+        }
+        return Bundle.module
+    }()
+
     private static func resolveActiveBundle() -> Bundle {
-        let module = Bundle.module
+        let module = resourceBundle
         let code: String
         switch current {
         case .system:

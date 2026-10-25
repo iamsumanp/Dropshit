@@ -64,6 +64,16 @@ if [ -d "Sources/${BIN_NAME}/Resources" ]; then
   cp -R "Sources/${BIN_NAME}/Resources/." "${APP_DIR}/Contents/Resources/" 2>/dev/null || true
 fi
 
+# The SwiftPM resource bundle holds the compiled localizations the app looks
+# up at launch (see LanguagePreference.resourceBundle). Without it the app
+# traps on startup on any machine other than the one that built it.
+RESOURCE_BUNDLE=".build/release/${BIN_NAME}_${BIN_NAME}.bundle"
+if [ ! -d "${RESOURCE_BUNDLE}" ]; then
+  echo "ERROR: ${RESOURCE_BUNDLE} not found — swift build should have produced it."
+  exit 1
+fi
+cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
+
 echo "==> Embedding Sparkle.framework"
 # The Sparkle xcframework artifact ships in .build/artifacts/ after `swift
 # build` resolves the SPM dependency. Prefer the xcframework's macos slice
